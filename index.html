@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ASL Lens AI - Real-time Sign Language Translator</title>
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Plus+Jakarta+Sans:wght@300;400;500;700&display=swap" rel="stylesheet">
+  <!-- Material Icons -->
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
+  
+  <!-- MediaPipe CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+  
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="logo-area">
+        <span class="material-icons-round logo-icon">fingerprint</span>
+        <div class="logo-text">
+          <h1>ASL Lens <span class="badge">AI</span></h1>
+          <p>Real-time Sign Language Translation</p>
+        </div>
+      </div>
+      
+      <div class="system-status">
+        <div id="camera-status" class="status-indicator offline">
+          <span class="dot"></span>
+          <span class="status-label">Camera Offline</span>
+        </div>
+        <div id="model-status" class="status-indicator offline">
+          <span class="dot"></span>
+          <span class="status-label">MediaPipe Loading...</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Content Grid -->
+    <main class="app-grid">
+      
+      <!-- Left Column: Video & Tracking -->
+      <section class="viewport-section">
+        <div class="card glass viewport-card">
+          <div class="viewport-wrapper">
+            <!-- Hidden video element for MediaPipe stream -->
+            <video id="webcam" autoplay playsinline muted></video>
+            <!-- Canvas to render the hand joints skeleton -->
+            <canvas id="output-canvas"></canvas>
+            
+            <!-- Dynamic UI Overlay (loading or status) -->
+            <div id="viewport-overlay" class="viewport-overlay">
+              <div class="loader-spinner"></div>
+              <p id="overlay-text">Starting system...</p>
+            </div>
+
+            <!-- Visual Indicator for hand presence -->
+            <div id="hand-indicator" class="hand-indicator-tag hidden">
+              <span class="material-icons-round">back_hand</span>
+              <span id="hand-indicator-text">No Hand</span>
+            </div>
+          </div>
+          
+          <!-- Viewport Controls -->
+          <div class="viewport-controls">
+            <button id="toggle-camera-btn" class="btn btn-secondary btn-icon" title="Toggle Camera">
+              <span class="material-icons-round">videocam</span>
+              <span>Pause Cam</span>
+            </button>
+            <button id="toggle-skeleton-btn" class="btn btn-secondary btn-icon active" title="Toggle Skeleton Overlay">
+              <span class="material-icons-round">grain</span>
+              <span>Skeleton</span>
+            </button>
+            <button id="reset-cam-btn" class="btn btn-secondary btn-icon" title="Reset Camera Connection">
+              <span class="material-icons-round">refresh</span>
+              <span>Reset</span>
+            </button>
+          </div>
+
+          <!-- Live Performance Stats -->
+          <div class="performance-bar">
+            <div class="stat-item">
+              <span class="stat-label">FPS</span>
+              <span id="fps-val" class="stat-value">0</span>
+            </div>
+            <div class="stat-divider"></div>
+            <div class="stat-item">
+              <span class="stat-label">Latency</span>
+              <span id="latency-val" class="stat-value">0 ms</span>
+            </div>
+            <div class="stat-divider"></div>
+            <div class="stat-item">
+              <span class="stat-label">Samples</span>
+              <span id="total-samples-val" class="stat-value">0</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right Column: Control Panel & Translation -->
+      <section class="controls-section">
+        
+        <!-- Mode Tabs -->
+        <div class="mode-tabs-container card glass">
+          <div class="mode-tabs">
+            <button id="tab-translate" class="tab-btn active">
+              <span class="material-icons-round">translate</span>
+              Translate Mode
+            </button>
+            <button id="tab-train" class="tab-btn">
+              <span class="material-icons-round">model_training</span>
+              Train Custom Signs
+            </button>
+          </div>
+        </div>
+
+        <!-- TRANSLATION MODE PANEL -->
+        <div id="panel-translate" class="panel active">
+          
+          <!-- Live Prediction Display -->
+          <div class="card glass prediction-card">
+            <h3>Current Gesture</h3>
+            <div class="prediction-large-container">
+              <div id="pred-text" class="prediction-word">NO SIGN</div>
+              <div class="confidence-bar-wrapper">
+                <div id="pred-confidence-fill" class="confidence-bar-fill" style="width: 0%"></div>
+              </div>
+              <div class="pred-meta">
+                <span>Confidence: <strong id="pred-confidence-text">0%</strong></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Sentence Builder -->
+          <div class="card glass sentence-card">
+            <div class="card-header-actions">
+              <h3>Accumulated Sentence</h3>
+              <div class="text-actions">
+                <button id="btn-speak" class="btn btn-tertiary btn-icon-only" title="Speak Sentence">
+                  <span class="material-icons-round">volume_up</span>
+                </button>
+                <button id="btn-copy" class="btn btn-tertiary btn-icon-only" title="Copy to Clipboard">
+                  <span class="material-icons-round">content_copy</span>
+                </button>
+              </div>
+            </div>
+            
+            <div class="sentence-box-wrapper">
+              <textarea id="sentence-output" placeholder="Signed words will accumulate here to build a sentence..." readonly></textarea>
+            </div>
+
+            <div class="sentence-controls">
+              <button id="btn-space" class="btn btn-primary btn-icon">
+                <span class="material-icons-round">space_bar</span>
+                <span>Space</span>
+              </button>
+              <button id="btn-backspace" class="btn btn-secondary btn-icon">
+                <span class="material-icons-round">backspace</span>
+                <span>Delete</span>
+              </button>
+              <button id="btn-clear" class="btn btn-danger btn-icon">
+                <span class="material-icons-round">delete_sweep</span>
+                <span>Clear</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- TRAINING MODE PANEL -->
+        <div id="panel-train" class="panel">
+          
+          <!-- Training Controller Card -->
+          <div class="card glass trainer-card">
+            <h3>Add New Gesture</h3>
+            
+            <div class="form-group">
+              <label for="new-gesture-name">Gesture/Word Name</label>
+              <div class="input-with-btn">
+                <input type="text" id="new-gesture-name" placeholder="e.g., HELLO, YES, THANK YOU, A, B">
+              </div>
+            </div>
+
+            <div class="capture-section">
+              <div class="capture-visuals">
+                <div class="progress-ring-container">
+                  <svg class="progress-ring" width="120" height="120">
+                    <circle class="progress-ring-bg" stroke="rgba(255,255,255,0.05)" stroke-width="8" fill="transparent" r="50" cx="60" cy="60"/>
+                    <circle id="capture-progress-bar" class="progress-ring-indicator" stroke="var(--accent-glow)" stroke-width="8" stroke-dasharray="314.16" stroke-dashoffset="314.16" fill="transparent" r="50" cx="60" cy="60"/>
+                  </svg>
+                  <div class="progress-ring-text">
+                    <span id="capture-count">0</span>
+                    <span class="progress-ring-sub">/ 15 samples</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="capture-actions">
+                <p class="help-text">Hold the gesture steady in front of the camera, then press and hold the button below or tap the Spacebar to record samples.</p>
+                <button id="btn-capture-sample" class="btn btn-accent btn-large btn-icon" disabled>
+                  <span class="material-icons-round">sensors</span>
+                  <span>Capture Sample</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Dataset Management Card -->
+          <div class="card glass dataset-card">
+            <div class="card-header-actions">
+              <h3>Trained Gestures</h3>
+              <div class="dataset-io-actions">
+                <button id="btn-export-dataset" class="btn btn-tertiary btn-icon btn-small">
+                  <span class="material-icons-round">download</span>
+                  <span>Export</span>
+                </button>
+                <button id="btn-import-dataset-trigger" class="btn btn-tertiary btn-icon btn-small">
+                  <span class="material-icons-round">upload</span>
+                  <span>Import</span>
+                </button>
+                <input type="file" id="import-dataset-file" accept=".json" style="display: none;">
+              </div>
+            </div>
+
+            <!-- List of trained gestures -->
+            <div class="gesture-list-wrapper">
+              <table class="gesture-table">
+                <thead>
+                  <tr>
+                    <th>Gesture</th>
+                    <th>Samples</th>
+                    <th style="text-align: right;">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="gesture-list-body">
+                  <tr>
+                    <td colspan="3" class="empty-list-cell">No custom gestures trained yet.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            
+            <div class="dataset-danger-zone">
+              <button id="btn-clear-dataset" class="btn btn-danger-outline btn-full btn-icon btn-small">
+                <span class="material-icons-round">delete_forever</span>
+                <span>Reset to Factory Default</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+      </section>
+    </main>
+  </div>
+
+  <script type="module" src="/src/app.js"></script>
+</body>
+</html>
