@@ -1,6 +1,6 @@
-# ASL Lens AI - Real-time Sign Language Translator 🤟
+# Handy Talk - Real-time Sign Language Translator 🤟
 
-ASL Lens AI is a premium, client-side web application designed to translate **American Sign Language (ASL)** into text in real-time. Built using vanilla JS, custom CSS, and Google's **MediaPipe Hands**, it operates 100% in the browser with sub-millisecond classification latency and absolute data privacy.
+Handy Talk is a premium, client-side web application designed to translate **American Sign Language (ASL)** into text in real-time. Built using vanilla JS, custom CSS, and Google's **MediaPipe Hands**, it operates 100% in the browser with sub-millisecond classification latency and absolute data privacy.
 
 ![Premium UI Dark Theme Mockup](https://raw.githubusercontent.com/google/mediapipe/master/docs/images/mobile/hand_crops.png) *(Placeholder caption: Active Hand Joint Mesh Visualization)*
 
