@@ -1,4 +1,5 @@
 import { ASLClassifier } from './classifier.js';
+import defaultAlphabet from '../asl_alphabet.json';
 
 // Elements
 const videoElement = document.getElementById('webcam');
@@ -11,6 +12,7 @@ const viewportOverlay = document.getElementById('viewport-overlay');
 const overlayText = document.getElementById('overlay-text');
 const handIndicator = document.getElementById('hand-indicator');
 const handIndicatorText = document.getElementById('hand-indicator-text');
+const debugCoords = document.getElementById('debug-coords');
 
 // Controls
 const toggleCameraBtn = document.getElementById('toggle-camera-btn');
@@ -77,7 +79,28 @@ let capturedSamplesCount = 0;
 const REQUIRED_SAMPLES = 15;
 let captureThrottleTime = 0;
 
+// Initialize Classifier
 const classifier = new ASLClassifier();
+
+// Motion history buffer specifically for dynamic letters J and Z
+let motionHistory = [];
+
+const getAlphabetArray = () => {
+  if (Array.isArray(defaultAlphabet)) return defaultAlphabet;
+  if (defaultAlphabet && Array.isArray(defaultAlphabet.default)) return defaultAlphabet.default;
+  return [];
+};
+const alphabet = getAlphabetArray();
+
+// Load pre-bundled alphabet if no custom gestures exist yet or if upgrading dataset
+const CURRENT_DB_VERSION = "v2_rotated";
+const storedDbVersion = localStorage.getItem("asl_db_version");
+const hasBundledWords = classifier.samples.some(s => s.label === "HELLO");
+if (classifier.samples.length === 0 || !hasBundledWords || storedDbVersion !== CURRENT_DB_VERSION) {
+  classifier.samples = [...alphabet];
+  classifier.saveToLocalStorage();
+  localStorage.setItem("asl_db_version", CURRENT_DB_VERSION);
+}
 
 const HAND_CONNECTIONS = [
   [0, 1], [1, 2], [2, 3], [3, 4], // Thumb
@@ -130,9 +153,9 @@ async function initApp() {
       locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
     });
 
-    // Configure MediaPipe for up to 2 hands
+    // Configure MediaPipe for single hand tracking
     handsDetector.setOptions({
-      maxNumHands: 2,
+      maxNumHands: 1,
       modelComplexity: 1,
       minDetectionConfidence: 0.78,
       minTrackingConfidence: 0.78
@@ -183,6 +206,12 @@ async function initApp() {
     cameraStatus.querySelector('.status-label').innerText = "Camera Denied";
   }
 
+  if (!classifier.samples || classifier.samples.length === 0) {
+    console.warn("Failsafe: classifier.samples was empty during initApp. Re-seeding from pre-bundled dataset...");
+    classifier.samples = [...alphabet];
+    classifier.saveToLocalStorage();
+  }
+
   updateStats();
   renderGestureList();
   setupEventListeners();
@@ -200,13 +229,24 @@ function onResults(results) {
   let validHands = [];
   let validHandedness = [];
   if (results.multiHandLandmarks && results.multiHandedness) {
+    const rawHands = [];
     for (let i = 0; i < results.multiHandLandmarks.length; i++) {
       const score = results.multiHandedness[i].score;
       if (score >= 0.85) { // Strict score threshold for hand detection validity
-        validHands.push(results.multiHandLandmarks[i]);
-        validHandedness.push(results.multiHandedness[i]);
+        // MediaPipe's raw handedness assumes a mirrored selfie view. Since our camera stream
+        // is unmirrored before it is processed, raw labels are inverted compared to physical hands.
+        const rawLabel = results.multiHandedness[i].label; // "Left" or "Right"
+        const physicalLabel = rawLabel === "Left" ? "Right" : "Left";
+        rawHands.push({
+          landmarks: results.multiHandLandmarks[i],
+          label: physicalLabel,
+          score: score
+        });
       }
     }
+
+    validHands = rawHands.map(h => h.landmarks);
+    validHandedness = rawHands.map(h => h.label);
   }
 
   const numHands = validHands.length;
@@ -216,30 +256,21 @@ function onResults(results) {
     
     // Update Hand presence indicator UI
     handIndicator.classList.remove('hidden');
-    if (numHands === 1) {
-      const handedness = validHandedness[0].label;
-      handIndicatorText.innerText = `${handedness} Hand`;
-      handIndicator.style.borderColor = HAND_COLORS[0].primary;
-      handIndicator.style.boxShadow = `0 0 15px ${HAND_COLORS[0].glow}`;
-    } else {
-      handIndicatorText.innerText = "2 Hands Detected";
-      handIndicator.style.borderColor = 'var(--accent-purple)';
-      handIndicator.style.boxShadow = `0 0 15px rgba(200, 100, 255, 0.4)`;
-    }
+    const handedness = validHandedness[0];
+    handIndicatorText.innerText = `${handedness} Hand`;
+    handIndicator.style.borderColor = HAND_COLORS[0].primary;
+    handIndicator.style.boxShadow = `0 0 15px ${HAND_COLORS[0].glow}`;
 
-    // Draw Skeletons for each hand with distinct color sets
+    // Draw Skeleton for the hand with cyan color theme
     if (isSkeletonVisible) {
-      currentHandList.forEach((landmarks, idx) => {
-        const colorPalette = HAND_COLORS[idx % HAND_COLORS.length];
-        drawHandSkeleton(landmarks, colorPalette);
-      });
+      drawHandSkeleton(currentHandList[0], HAND_COLORS[0]);
     }
 
-    // Process predictions/training
+    // Process predictions/training with handedness data
     if (activeTab === 'translate') {
-      processTranslation(currentHandList);
+      processTranslation(currentHandList, validHandedness);
     } else if (activeTab === 'train') {
-      processTraining(currentHandList);
+      processTraining(currentHandList, validHandedness);
     }
   } else {
     currentHandList = null;
@@ -303,9 +334,122 @@ function drawHandSkeleton(landmarks, colors) {
   canvasCtx.shadowBlur = 0;
 }
 
-function processTranslation(handList) {
-  const prediction = classifier.classify(handList);
+function checkMotionGestures(handList, currentPred) {
+  if (!handList || handList.length !== 1) {
+    motionHistory = [];
+    return null;
+  }
+
+  const landmarks = handList[0];
+  const indexTip = landmarks[8];
+  const pinkyTip = landmarks[20];
+
+  motionHistory.push({
+    index: { x: indexTip.x, y: indexTip.y },
+    pinky: { x: pinkyTip.x, y: pinkyTip.y }
+  });
+
+  // Keep last 25 frames (~0.8 seconds at 30fps) for motion gesture checks
+  if (motionHistory.length > 25) {
+    motionHistory.shift();
+  }
+
+  if (motionHistory.length < 12) return null;
+
+  // 1. Detect "J" (Starts in 'I' shape, draws a curved hook path down and left-up)
+  if (currentPred === "I" || currentPred === "Y") {
+    const ys = motionHistory.map(pt => pt.pinky.y);
+    const xs = motionHistory.map(pt => pt.pinky.x);
+    
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+
+    const dy = maxY - minY;
+    const dx = maxX - minX;
+
+    // Require substantial curve size
+    if (dy > 0.15 && dx > 0.08) {
+      const lowestPointIdx = ys.indexOf(maxY);
+      // Lowest point should happen toward the middle-latter part of the gesture
+      if (lowestPointIdx > 4 && lowestPointIdx < motionHistory.length - 2) {
+        const yBefore = ys.slice(0, lowestPointIdx);
+        const yAfter = ys.slice(lowestPointIdx);
+        
+        const movesDown = yBefore[yBefore.length - 1] > yBefore[0];
+        const movesUp = yAfter[yAfter.length - 1] < yAfter[0];
+
+        if (movesDown && movesUp) {
+          motionHistory = []; // Reset trace
+          return { label: "J", confidence: 0.95 };
+        }
+      }
+    }
+  }
+
+  // 2. Detect "Z" (Starts in 'D'/'L'/'G' shape or temporary 'NO SIGN', traces a horizontal zig-zag)
+  if (currentPred === "D" || currentPred === "L" || currentPred === "G" || currentPred === "U" || currentPred === "Z" || currentPred === "NO SIGN") {
+    const xs = motionHistory.map(pt => pt.index.x);
+    const ys = motionHistory.map(pt => pt.index.y);
+
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+
+    const dx = maxX - minX;
+    const dy = maxY - minY;
+
+    if (dx > 0.15 && dy > 0.12) {
+      // Detect horizontal direction reversals
+      let dirChanges = 0;
+      let currentDir = 0;
+
+      // Simple 3-frame average smoothing
+      const smoothedXs = [];
+      for (let i = 0; i < xs.length - 2; i++) {
+        smoothedXs.push((xs[i] + xs[i+1] + xs[i+2]) / 3);
+      }
+
+      for (let i = 1; i < smoothedXs.length; i++) {
+        const diff = smoothedXs[i] - smoothedXs[i - 1];
+        if (Math.abs(diff) > 0.006) {
+          const newDir = diff > 0 ? 1 : -1;
+          if (currentDir !== 0 && newDir !== currentDir) {
+            dirChanges++;
+          }
+          currentDir = newDir;
+        }
+      }
+
+      // A standard zig-zag will have at least 2 directional shifts
+      if (dirChanges >= 2 && dirChanges <= 5) {
+        motionHistory = []; // Reset trace
+        return { label: "Z", confidence: 0.95 };
+      }
+    }
+  }
+
+  return null;
+}
+
+function processTranslation(handList, handednessList = ["Right"]) {
+  const width = videoElement.videoWidth || 640;
+  const height = videoElement.videoHeight || 480;
+  const aspectRatio = width / height;
+  let prediction = classifier.classify(handList, handednessList, 5, aspectRatio);
   
+  // Inject motion tracing detection overrides for J & Z
+  const motionPred = checkMotionGestures(handList, prediction.label);
+  if (motionPred) {
+    prediction = motionPred;
+  }
+  
+  if (debugCoords) {
+    debugCoords.innerText = '';
+  }
+
   if (prediction.label !== "NO SIGN" && prediction.confidence > 0.45) {
     predText.innerText = prediction.label;
     predText.classList.remove('empty');
@@ -357,10 +501,12 @@ function processTranslation(handList) {
 }
 
 function handleNoHand() {
+  motionHistory = []; // Clear motion tracker when hands leave screen
   predText.innerText = "NO SIGN";
   predText.classList.add('empty');
   predConfidenceFill.style.width = '0%';
   predConfidenceText.innerText = '0%';
+  if (debugCoords) debugCoords.innerText = '';
 
   predictionBuffer.push("NO SIGN");
   if (predictionBuffer.length > PREDICTION_BUFFER_SIZE) {
@@ -384,7 +530,7 @@ function appendWordToSentence(word) {
   sentenceOutput.scrollTop = sentenceOutput.scrollHeight;
 }
 
-function processTraining(handList) {
+function processTraining(handList, handednessList = ["Right"]) {
   if (!isCapturing) return;
 
   const now = performance.now();
@@ -398,7 +544,10 @@ function processTraining(handList) {
     return;
   }
 
-  const success = classifier.addSample(label, handList);
+  const width = videoElement.videoWidth || 640;
+  const height = videoElement.videoHeight || 480;
+  const aspectRatio = width / height;
+  const success = classifier.addSample(label, handList, handednessList, aspectRatio);
   if (success) {
     capturedSamplesCount++;
     captureCountEl.innerText = capturedSamplesCount;
@@ -446,11 +595,10 @@ function renderGestureList() {
   
   const grouped = {};
   classifier.samples.forEach(sample => {
-    const key = `${sample.label} (${sample.numHands} Hand${sample.numHands > 1 ? 's' : ''})`;
+    const key = sample.label;
     grouped[key] = {
       label: sample.label,
-      count: (grouped[key]?.count || 0) + 1,
-      numHands: sample.numHands
+      count: (grouped[key]?.count || 0) + 1
     };
   });
 
@@ -469,7 +617,7 @@ function renderGestureList() {
     const item = grouped[key];
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td><strong>${item.label}</strong> <span class="badge" style="background: rgba(255,255,255,0.05); color: var(--text-secondary); font-size:10px; padding:2px 6px; border-radius:4px; margin-left:8px;">${item.numHands} Hand${item.numHands > 1 ? 's' : ''}</span></td>
+      <td><strong>${item.label}</strong></td>
       <td>${item.count} samples</td>
       <td style="text-align: right;">
         <button class="btn btn-tertiary btn-icon btn-small delete-gesture-btn" data-label="${item.label}" style="color: var(--accent-danger);">
@@ -694,6 +842,10 @@ function setupEventListeners() {
   btnClearDataset.addEventListener('click', () => {
     if (confirm("WARNING: This will wipe all custom gestures and reset the engine to default. This cannot be undone. Proceed?")) {
       classifier.clearDataset();
+      // Reset to default pre-bundled alphabet
+      classifier.samples = [...alphabet];
+      classifier.saveToLocalStorage();
+      localStorage.setItem("asl_db_version", CURRENT_DB_VERSION);
       renderGestureList();
       updateStats();
       playBeep(200, 0.4, 'sawtooth');

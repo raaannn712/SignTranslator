@@ -14,11 +14,11 @@ export class ASLClassifier {
   /**
    * Helper to calculate hand scale factor.
    */
-  getScaleFactor(landmarks) {
+  getScaleFactor(landmarks, aspectRatio = 1.3333) {
     const wrist = landmarks[0];
-    const dxScale = landmarks[9].x - wrist.x;
+    const dxScale = (landmarks[9].x - wrist.x) * aspectRatio;
     const dyScale = landmarks[9].y - wrist.y;
-    const dzScale = landmarks[9].z - wrist.z;
+    const dzScale = (landmarks[9].z - wrist.z) * aspectRatio;
     return Math.sqrt(dxScale * dxScale + dyScale * dyScale + dzScale * dzScale) || 1.0;
   }
 
@@ -28,42 +28,40 @@ export class ASLClassifier {
    * @param {Array} landmarks - 21 coordinates of {x, y, z}
    * @returns {Array} 63-dimensional flat float array
    */
-  normalize(landmarks) {
+  normalize(landmarks, handedness = "Right", aspectRatio = 1.3333) {
     if (!landmarks || landmarks.length !== 21) return null;
 
     const wrist = landmarks[0];
-    const scaleFactor = this.getScaleFactor(landmarks);
+    const scaleFactor = this.getScaleFactor(landmarks, aspectRatio);
+
+    // Calculate rotation angle to align the wrist-to-middle-knuckle (0 -> 9) vector straight up
+    const mcp = landmarks[9];
+    const dxMcp = (mcp.x - wrist.x) * aspectRatio;
+    const dyMcp = mcp.y - wrist.y;
+    // Angle relative to straight up (which is dx=0, dy < 0)
+    const angle = Math.atan2(dxMcp, -dyMcp);
+    const cosA = Math.cos(-angle);
+    const sinA = Math.sin(-angle);
 
     const normalized = [];
     for (let i = 0; i < 21; i++) {
       const lm = landmarks[i];
-      // Translate to wrist origin, then divide by scale factor
-      normalized.push((lm.x - wrist.x) / scaleFactor);
-      normalized.push((lm.y - wrist.y) / scaleFactor);
-      normalized.push((lm.z - wrist.z) / scaleFactor);
+      const dx = (lm.x - wrist.x) * aspectRatio;
+      const dy = lm.y - wrist.y;
+      const dz = (lm.z - wrist.z) * aspectRatio;
+      
+      // Rotate dx and dy around the wrist
+      const rotatedDx = dx * cosA - dy * sinA;
+      const rotatedDy = dx * sinA + dy * cosA;
+
+      // Mirror the X-axis for Left Hand input to match the Right Hand baseline templates
+      const finalDx = handedness === "Left" ? -rotatedDx : rotatedDx;
+
+      normalized.push(finalDx / scaleFactor);
+      normalized.push(rotatedDy / scaleFactor);
+      normalized.push(dz / scaleFactor);
     }
     return normalized;
-  }
-
-  /**
-   * Normalize two hands and compute their relative position.
-   * @returns {Array} 129-dimensional flat float array
-   */
-  normalizeDual(hand1, hand2) {
-    const feat1 = this.normalize(hand1);
-    const feat2 = this.normalize(hand2);
-    if (!feat1 || !feat2) return null;
-
-    const s1 = this.getScaleFactor(hand1);
-    const s2 = this.getScaleFactor(hand2);
-    const sAvg = (s1 + s2) / 2;
-
-    // Relative offset of hand 2's wrist from hand 1's wrist, normalized by hand sizes
-    const dx = (hand2[0].x - hand1[0].x) / sAvg;
-    const dy = (hand2[0].y - hand1[0].y) / sAvg;
-    const dz = (hand2[0].z - hand1[0].z) / sAvg;
-
-    return [...feat1, ...feat2, dx, dy, dz];
   }
 
   /**
@@ -72,15 +70,26 @@ export class ASLClassifier {
    */
   getFingerStates(landmarks) {
     const dist = (p1, p2) => Math.hypot(p1.x - p2.x, p1.y - p2.y, p1.z - p2.z);
-    const wrist = landmarks[0];
 
-    const indexExtended = dist(landmarks[8], wrist) > dist(landmarks[6], wrist);
-    const middleExtended = dist(landmarks[12], wrist) > dist(landmarks[10], wrist);
-    const ringExtended = dist(landmarks[16], wrist) > dist(landmarks[14], wrist);
-    const pinkyExtended = dist(landmarks[20], wrist) > dist(landmarks[18], wrist);
+    // Calculate straight-line tip-to-knuckle distance vs segment sum to detect true finger extension
+    const isStraight = (tip, dip, pip, mcp) => {
+      const straightDist = dist(landmarks[tip], landmarks[mcp]);
+      const segmentSum = dist(landmarks[tip], landmarks[dip]) + 
+                         dist(landmarks[dip], landmarks[pip]) + 
+                         dist(landmarks[pip], landmarks[mcp]);
+      return straightDist > 0.82 * segmentSum; // Calibrated straightness threshold
+    };
 
-    const thumbExtended = dist(landmarks[4], wrist) > dist(landmarks[2], wrist) && 
-                          dist(landmarks[4], landmarks[9]) > dist(landmarks[2], landmarks[9]);
+    const indexExtended = isStraight(8, 7, 6, 5);
+    const middleExtended = isStraight(12, 11, 10, 9);
+    const ringExtended = isStraight(16, 15, 14, 13);
+    const pinkyExtended = isStraight(20, 19, 18, 17);
+
+    // Thumb extended check: straight length vs segment sum, pointing outward from palm index base (9)
+    const thumbStraight = dist(landmarks[4], landmarks[1]) > 0.85 * (
+      dist(landmarks[4], landmarks[3]) + dist(landmarks[3], landmarks[2]) + dist(landmarks[2], landmarks[1])
+    );
+    const thumbExtended = thumbStraight && dist(landmarks[4], landmarks[9]) > dist(landmarks[2], landmarks[9]);
 
     const thumbIndexDist = dist(landmarks[4], landmarks[8]);
     const thumbMiddleDist = dist(landmarks[4], landmarks[12]);
@@ -99,126 +108,68 @@ export class ASLClassifier {
   }
 
   /**
-   * Heuristic rules for common ASL letters and basic signs.
-   * @param {Array} landmarks - 21 coordinates
+   * Classify hand landmarks using 100% data-driven KNN.
+   * Compares the hand joint distances against pre-trained patterns.
+   * Supports single-hand (63 features) inputs.
+   * @param {Array} handList - Array of hands landmarks, e.g. [hand1]
+   * @param {Array} handednessList - Array of hand labels, e.g. ["Right"]
    */
-  detectHeuristics(landmarks) {
-    const states = this.getFingerStates(landmarks);
-    const wrist = landmarks[0];
-    const thumbTip = landmarks[4];
-
-    // HELLO (Open Hand)
-    if (states.thumb && states.index && states.middle && states.ring && states.pinky) {
-      return { label: "HELLO", confidence: 0.95 };
-    }
-
-    // I LOVE YOU
-    if (states.thumb && states.index && !states.middle && !states.ring && states.pinky) {
-      return { label: "I LOVE YOU", confidence: 0.95 };
-    }
-
-    // YES (Thumbs Up)
-    if (states.thumb && !states.index && !states.middle && !states.ring && !states.pinky) {
-      if (thumbTip.y < landmarks[2].y) {
-        return { label: "YES", confidence: 0.95 };
-      }
-      return { label: "A", confidence: 0.85 };
-    }
-
-    // NO (ASL "no")
-    if (!states.ring && !states.pinky && states.index && states.middle) {
-      if (states.thumbIndexDist < 0.12 && states.indexMiddleDist < 0.08) {
-        return { label: "NO", confidence: 0.90 };
-      }
-    }
-
-    // Letter B
-    if (!states.thumb && states.index && states.middle && states.ring && states.pinky) {
-      if (states.indexMiddleDist < 0.05) {
-        return { label: "B", confidence: 0.92 };
-      }
-    }
-
-    // Letter L
-    if (states.thumb && states.index && !states.middle && !states.ring && !states.pinky) {
-      return { label: "L", confidence: 0.95 };
-    }
-
-    // Letter V
-    if (!states.thumb && states.index && states.middle && !states.ring && !states.pinky) {
-      if (states.indexMiddleDist > 0.08) {
-        return { label: "V", confidence: 0.95 };
-      }
-      return { label: "U", confidence: 0.90 };
-    }
-
-    // Letter W
-    if (!states.thumb && states.index && states.middle && states.ring && !states.pinky) {
-      return { label: "W", confidence: 0.90 };
-    }
-
-    // Letter Y
-    if (states.thumb && !states.index && !states.middle && !states.ring && states.pinky) {
-      return { label: "Y", confidence: 0.95 };
-    }
-
-    // OK Sign / Letter F
-    if (states.thumbIndexDist < 0.05 && states.middle && states.ring && states.pinky) {
-      return { label: "F", confidence: 0.95 };
-    }
-
-    // Letter D
-    if (states.index && !states.middle && !states.ring && !states.pinky && states.thumbIndexDist > 0.08) {
-      if (states.thumbMiddleDist < 0.06) {
-        return { label: "D", confidence: 0.90 };
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Classify hand landmarks using KNN + Heuristics.
-   * Runs rule-based classification first, then KNN.
-   * Supports both 1-hand and 2-hand inputs.
-   * @param {Array} handList - Array of hands landmarks, e.g. [hand1] or [hand1, hand2]
-   */
-  classify(handList, k = 5) {
+  classify(handList, handednessList = ["Right"], k = 5, aspectRatio = 1.3333) {
     if (!handList || handList.length === 0) {
       return { label: "NO SIGN", confidence: 0 };
     }
 
-    const numHands = handList.length;
+    const landmarks = handList[0];
+    const handedness = handednessList[0] || "Right";
 
-    // 1. For single hand, run rule-based check first
-    if (numHands === 1) {
-      const heuristicMatch = this.detectHeuristics(handList[0]);
-      if (heuristicMatch) {
-        return heuristicMatch;
-      }
-    }
-
-    // 2. Query KNN Classifier
-    const activeSamples = this.samples.filter(s => s.numHands === numHands);
+    // Query KNN Classifier
+    const activeSamples = this.samples;
     if (activeSamples.length === 0) {
       return { label: "NO SIGN", confidence: 0 };
     }
 
     // Normalize test features
-    let testFeature;
-    if (numHands === 1) {
-      testFeature = this.normalize(handList[0]);
-    } else {
-      testFeature = this.normalizeDual(handList[0], handList[1]);
-    }
-
+    const testFeature = this.normalize(landmarks, handedness, aspectRatio);
     if (!testFeature) return { label: "NO SIGN", confidence: 0 };
 
-    // Calculate Euclidean distances
+    // 1. Try Rule-Based classification first for core fingerspelling letters
+    const ruleLabel = this.classifyRuleBased(testFeature);
+    if (ruleLabel) {
+      return {
+        label: ruleLabel,
+        confidence: 0.95,
+        nearestLabel: ruleLabel,
+        nearestDistance: 0.0,
+        testFeature: testFeature,
+        nearest3D: [ruleLabel + " (Rule)"],
+        nearest2D: [ruleLabel + " (Rule)"]
+      };
+    }
+
+    // Calculate 3D Euclidean distances
     const dim = testFeature.length;
     const distances = activeSamples.map(sample => {
       let sumSq = 0;
-      for (let i = 0; i < dim; i++) {
+      const sampleDim = sample.features.length;
+      // Safeguard in case there are dual hand samples in legacy local storage
+      const maxDim = Math.min(dim, sampleDim);
+      for (let i = 0; i < maxDim; i++) {
+        const diff = testFeature[i] - sample.features[i];
+        sumSq += diff * diff;
+      }
+      return {
+        label: sample.label,
+        distance: Math.sqrt(sumSq)
+      };
+    });
+
+    // Calculate 2D Euclidean distances
+    const distances2D = activeSamples.map(sample => {
+      let sumSq = 0;
+      const sampleDim = sample.features.length;
+      const maxDim = Math.min(dim, sampleDim);
+      for (let i = 0; i < maxDim; i++) {
+        if (i % 3 === 2) continue; // Skip Z
         const diff = testFeature[i] - sample.features[i];
         sumSq += diff * diff;
       }
@@ -230,16 +181,14 @@ export class ASLClassifier {
 
     // Sort by distance ascending
     distances.sort((a, b) => a.distance - b.distance);
+    distances2D.sort((a, b) => a.distance - b.distance);
 
     // Get top K nearest neighbors
     const nearest = distances.slice(0, Math.min(k, distances.length));
 
-    // Threshold check: Higher dimensions (129 for 2 hands) naturally produce larger Euclidean distances.
-    // Scale distance limit appropriately.
-    const threshold = numHands === 2 ? 1.75 : 1.20;
-    if (nearest[0].distance > threshold) {
-      return { label: "NO SIGN", confidence: 0 };
-    }
+    // Threshold check
+    const threshold = 0.90;
+    const isBelowThreshold = nearest[0].distance <= threshold;
 
     // Count class votes
     const votes = {};
@@ -271,30 +220,126 @@ export class ASLClassifier {
     confidence = (confidence * 0.7) + (distancePenalty * 0.3);
 
     return {
-      label: bestLabel,
-      confidence: Math.min(1.0, Math.max(0.1, confidence))
+      label: isBelowThreshold ? bestLabel : "NO SIGN",
+      confidence: isBelowThreshold ? Math.min(1.0, Math.max(0.1, confidence)) : 0,
+      nearestLabel: nearest[0].label,
+      nearestDistance: nearest[0].distance,
+      testFeature: testFeature,
+      nearest3D: nearest.slice(0, 3).map(n => `${n.label} (${n.distance.toFixed(2)})`),
+      nearest2D: distances2D.slice(0, 3).map(n => `${n.label} (${n.distance.toFixed(2)})`)
     };
   }
 
   /**
-   * Save a hand gesture sample (1 or 2 hands) to the training database.
+   * Rule-Based heuristic classifier for core fingerspelling letters.
+   * Utilizes finger extension thresholds on rotated normalized 3D landmarks.
    */
-  addSample(label, handList) {
+  classifyRuleBased(features) {
+    const lm = [];
+    for (let i = 0; i < 21; i++) {
+      lm.push({
+        x: features[i * 3],
+        y: features[i * 3 + 1],
+        z: features[i * 3 + 2]
+      });
+    }
+
+    // Helper to calculate the straightness ratio of a finger (1.0 = fully straight, <0.8 = bent/curved)
+    const getStraightness = (tip, dip, pip, mcp) => {
+      const d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+      const straightDist = d(lm[tip], lm[mcp]);
+      const segmentSum = d(lm[tip], lm[dip]) + d(lm[dip], lm[pip]) + d(lm[pip], lm[mcp]);
+      return straightDist / (segmentSum || 1.0);
+    };
+
+    const isStraightIndex = getStraightness(8, 7, 6, 5) > 0.82;
+    const isStraightMiddle = getStraightness(12, 11, 10, 9) > 0.82;
+    const isStraightRing = getStraightness(16, 15, 14, 13) > 0.82;
+    const isStraightPinky = getStraightness(20, 19, 18, 17) > 0.80;
+
+    // Calculate finger extensions using Y differences in normalized space
+    const extIndex = (lm[5].y - lm[8].y) > 0.35;
+    const extMiddle = (lm[9].y - lm[12].y) > 0.35;
+    const extRing = (lm[13].y - lm[16].y) > 0.35;
+    const extPinky = (lm[17].y - lm[20].y) > 0.28;
+    
+    const thumbExtended = lm[4].x > 0.55;
+
+    // 1. B & C: Index, Middle, Ring, Pinky extended
+    if (extIndex && extMiddle && extRing && extPinky) {
+      if (!isStraightIndex && !isStraightMiddle) {
+        return "C";
+      }
+      if (isStraightIndex && isStraightMiddle && isStraightRing && isStraightPinky && !thumbExtended) {
+        return "B";
+      }
+    }
+    
+    // 2. F: Middle, Ring, Pinky extended (straight), Index folded
+    if (!extIndex && extMiddle && extRing && extPinky && isStraightMiddle && isStraightRing && isStraightPinky) {
+      return "F";
+    }
+    
+    // 3. W: Index, Middle, Ring extended (straight), Pinky folded
+    if (extIndex && extMiddle && extRing && !extPinky && isStraightIndex && isStraightMiddle && isStraightRing) {
+      return "W";
+    }
+    
+    // 4. Y: Pinky extended (straight), Thumb extended, Index/Middle folded
+    if (!extIndex && !extMiddle && !extRing && extPinky && isStraightPinky && thumbExtended) {
+      return "Y";
+    }
+    
+    // 5. I: Pinky extended (straight), Thumb folded, Index/Middle folded
+    if (!extIndex && !extMiddle && !extRing && extPinky && isStraightPinky && !thumbExtended) {
+      return "I";
+    }
+    
+    // 6. L: Index extended (straight), Thumb extended, others folded
+    if (extIndex && isStraightIndex && !extMiddle && !extRing && !extPinky && thumbExtended) {
+      return "L";
+    }
+    
+    // 7. D: Index extended (straight), Thumb folded, others folded
+    if (extIndex && isStraightIndex && !extMiddle && !extRing && !extPinky && !thumbExtended) {
+      return "D";
+    }
+    
+    // 8. V, U, R: Index and Middle extended vertically (straight), Ring and Pinky folded
+    if (extIndex && extMiddle && isStraightIndex && isStraightMiddle && !extRing && !extPinky) {
+      const indexMiddleDist = Math.hypot(lm[8].x - lm[12].x, lm[8].y - lm[12].y);
+      if (lm[8].x < lm[12].x) {
+        return "R"; // Crossed
+      }
+      if (indexMiddleDist > 0.38) {
+        return "V"; // Separated
+      } else {
+        return "U"; // Close together
+      }
+    }
+
+    // 9. I LOVE YOU: Thumb, Index, Pinky extended (straight), Middle and Ring folded
+    if (extIndex && isStraightIndex && !extMiddle && !extRing && extPinky && isStraightPinky && thumbExtended) {
+      return "I LOVE YOU";
+    }
+
+    return null; // Fallback to KNN
+  }
+
+  /**
+   * Save a hand gesture sample to the training database.
+   */
+  addSample(label, handList, handednessList = ["Right"], aspectRatio = 1.3333) {
     if (!handList || handList.length === 0) return false;
     
-    const numHands = handList.length;
-    let features;
-
-    if (numHands === 1) {
-      features = this.normalize(handList[0]);
-    } else {
-      features = this.normalizeDual(handList[0], handList[1]);
-    }
+    const landmarks = handList[0];
+    const handedness = handednessList[0] || "Right";
+    const features = this.normalize(landmarks, handedness, aspectRatio);
 
     if (features) {
       this.samples.push({
         label: label.toUpperCase().trim(),
-        numHands: numHands,
+        numHands: 1,
         features: features
       });
       this.saveToLocalStorage();
