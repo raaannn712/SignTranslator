@@ -320,8 +320,19 @@ export class ASLClassifier {
       return "D";
     }
     
-    // 8. V, U, R, H: Index and Middle extended (straight), Ring and Pinky folded
+    // 8. V, U, R, H, K, P: Index and Middle extended (straight), Ring and Pinky folded
     if (extIndex && extMiddle && isStraightIndex && isStraightMiddle && !extRing && !extPinky) {
+      const thumbTipToKnuckleYDiff = lm[4].y - lm[9].y;
+
+      // Classify based on vertical position of thumb tip in normalized rotated space
+      if (thumbTipToKnuckleYDiff < 0.18) {
+        return "K"; // Thumb extended high up is K
+      }
+      if (thumbTipToKnuckleYDiff < 0.32) {
+        return "P"; // Thumb extended halfway down is P
+      }
+
+      // Otherwise, thumb is folded across the palm (U, V, R, H)
       if (angleDeg >= 45) {
         return "H"; // Sideways is H
       }

@@ -4,7 +4,7 @@ try {
   const fileContent = fs.readFileSync('asl_alphabet.json', 'utf8');
   const samples = JSON.parse(fileContent);
 
-  const getRotationAngles = (label) => {
+  const getXs = (label) => {
     const matching = samples.filter(s => s.label === label);
     console.log(`=== ${label} (${matching.length} samples) ===`);
     matching.slice(0, 5).forEach((sample, idx) => {
@@ -17,20 +17,13 @@ try {
           z: features[i * 3 + 2]
         });
       }
-      
-      // In the raw templates, features are already rotated.
-      // But we can check their knuckles to see the orientation of the fingers relative to the hand.
-      // Wait, in normalized features, the wrist (0) is at 0,0 and middle knuckle (9) is on the Y-axis.
-      // So the rotation angle in the template files themselves is already aligned.
-      // But we want to check what rotation is applied on the raw landmarks.
-      // Since we don't have raw landmarks here, we can think:
-      // When the user signs G in real life, their hand is horizontal, so the raw landmarks will have a large angle, which our normalize() function will calculate.
-      // So yes, rotationAngle is computed from raw landmarks, and represents the hand tilt.
+      console.log(`Sample ${idx}: lm[8].x = ${lm[8].x.toFixed(3)}, lm[12].x = ${lm[12].x.toFixed(3)}, diff(8-12) = ${(lm[8].x - lm[12].x).toFixed(3)}`);
     });
   };
 
-  getRotationAngles('L');
-  getRotationAngles('G');
+  getXs('R');
+  getXs('U');
+  getXs('V');
 } catch (e) {
   console.error(e);
 }
