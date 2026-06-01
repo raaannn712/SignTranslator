@@ -357,7 +357,7 @@ function checkMotionGestures(handList, currentPred) {
     motionHistory.shift();
   }
 
-  if (motionHistory.length < 12) return null;
+  if (motionHistory.length < 8) return null;
 
   // 1. Detect "J" (Starts in 'I' shape, draws a curved hook path down and left-up)
   if (currentPred === "I" || currentPred === "Y") {
@@ -372,11 +372,11 @@ function checkMotionGestures(handList, currentPred) {
     const dy = maxY - minY;
     const dx = maxX - minX;
 
-    // Require substantial curve size
-    if (dy > 0.15 && dx > 0.08) {
+    // More forgiving curve size requirements (down from 0.15/0.08)
+    if (dy > 0.08 && dx > 0.04) {
       const lowestPointIdx = ys.indexOf(maxY);
       // Lowest point should happen toward the middle-latter part of the gesture
-      if (lowestPointIdx > 4 && lowestPointIdx < motionHistory.length - 2) {
+      if (lowestPointIdx > 2 && lowestPointIdx < motionHistory.length - 1) {
         const yBefore = ys.slice(0, lowestPointIdx);
         const yAfter = ys.slice(lowestPointIdx);
         
@@ -404,7 +404,8 @@ function checkMotionGestures(handList, currentPred) {
     const dx = maxX - minX;
     const dy = maxY - minY;
 
-    if (dx > 0.15 && dy > 0.12) {
+    // More forgiving box size requirements (down from 0.15/0.12)
+    if (dx > 0.08 && dy > 0.06) {
       // Detect horizontal direction reversals
       let dirChanges = 0;
       let currentDir = 0;
@@ -417,7 +418,7 @@ function checkMotionGestures(handList, currentPred) {
 
       for (let i = 1; i < smoothedXs.length; i++) {
         const diff = smoothedXs[i] - smoothedXs[i - 1];
-        if (Math.abs(diff) > 0.006) {
+        if (Math.abs(diff) > 0.004) {
           const newDir = diff > 0 ? 1 : -1;
           if (currentDir !== 0 && newDir !== currentDir) {
             dirChanges++;
