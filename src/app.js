@@ -72,7 +72,7 @@ const PREDICTION_BUFFER_SIZE = 12;
 let predictionBuffer = [];
 let lastStabilizedWord = '';
 let stableCount = 0;
-const STABILITY_LOCK_THRESHOLD = 20;
+const STABILITY_LOCK_THRESHOLD = 10;
 
 // Recording
 let isCapturing = false;
