@@ -198,38 +198,33 @@ export class ASLClassifier {
     const threshold = isStrict ? 0.70 : 0.90;
     const isBelowThreshold = nearest[0].distance <= threshold;
 
-    // Count class votes
-    const votes = {};
+    // Use distance-weighted voting so a single close match matters more than
+    // several weak neighbors with the same label.
+    const labelWeights = {};
+    let totalWeight = 0;
     nearest.forEach(neighbor => {
-      votes[neighbor.label] = (votes[neighbor.label] || 0) + 1;
+      const weight = 1 / Math.max((neighbor.distance * neighbor.distance), 1e-6);
+      totalWeight += weight;
+      labelWeights[neighbor.label] = (labelWeights[neighbor.label] || 0) + weight;
     });
 
-    // Find class with majority votes
-    let bestLabel = "NO SIGN";
-    let maxVotes = 0;
-    Object.keys(votes).forEach(label => {
-      if (votes[label] > maxVotes) {
-        maxVotes = votes[label];
-        bestLabel = label;
-      }
-    });
+    const rankedLabels = Object.entries(labelWeights).sort((a, b) => b[1] - a[1]);
+    const [bestLabel = "NO SIGN", bestWeight = 0] = rankedLabels[0] || [];
+    const runnerUpWeight = rankedLabels[1]?.[1] || 0;
+    const totalWeightSafe = totalWeight || 1;
 
-    const totalNearest = nearest.length;
-    const labelVotes = votes[bestLabel];
-    
-    let confidence = labelVotes / totalNearest;
+    const weightShare = bestWeight / totalWeightSafe;
+    const marginShare = bestWeight > 0 ? Math.max(0, (bestWeight - runnerUpWeight) / bestWeight) : 0;
+    const nearestDistanceScore = Math.max(0, 1 - (nearest[0].distance / threshold));
 
-    // Adjust confidence based on match proximity
-    const avgDistance = nearest
-      .filter(n => n.label === bestLabel)
-      .reduce((sum, n) => sum + n.distance, 0) / labelVotes;
-      
-    const distancePenalty = Math.max(0, 1 - avgDistance / threshold);
-    confidence = (confidence * 0.7) + (distancePenalty * 0.3);
+    let confidence = (weightShare * 0.55) + (marginShare * 0.30) + (nearestDistanceScore * 0.15);
+    confidence = Math.min(1.0, Math.max(0.1, confidence));
+
+    const isConfidentMatch = isBelowThreshold && weightShare >= 0.42 && marginShare >= 0.10;
 
     return {
-      label: isBelowThreshold ? bestLabel : "NO SIGN",
-      confidence: isBelowThreshold ? Math.min(1.0, Math.max(0.1, confidence)) : 0,
+      label: isConfidentMatch ? bestLabel : "NO SIGN",
+      confidence: isConfidentMatch ? confidence : 0,
       nearestLabel: nearest[0].label,
       nearestDistance: nearest[0].distance,
       testFeature: testFeature,
@@ -324,10 +319,24 @@ export class ASLClassifier {
     if (!extIndex && !extMiddle && !extRing && extPinky && isStraightPinky && !thumbExtended) {
       return "I";
     }
+
+    // YES: Thumbs-up (or thumb extended while all other fingers folded)
+    if (thumbExtended && !extIndex && !extMiddle && !extRing && !extPinky) {
+      return "YES";
+    }
     
-    // 6. L / G: Index extended (straight), Thumb extended, others folded
+    // 6. L / Q / G: Index extended (straight), Thumb extended, others folded
     if (extIndex && isStraightIndex && !extMiddle && !extRing && !extPinky && thumbExtended) {
-      const isG = rawLandmarks ? (indexAngleDeg >= 50 || angleDeg >= 50) : (angleDeg >= 45);
+      const isQ = rawLandmarks
+        ? (isDownwardFinger || rawYDiff > 0.1 || angleDeg >= 115)
+        : (angleDeg >= 115);
+      const isG = rawLandmarks
+        ? (isSidewaysFinger && !isDownwardFinger)
+        : (angleDeg >= 45 && angleDeg < 115);
+
+      if (isQ) {
+        return "Q"; // Downward pistol shape is Q
+      }
       if (isG) {
         return "G"; // Sideways is G
       } else {

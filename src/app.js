@@ -1,3 +1,4 @@
+import axios from 'axios';
 import { ASLClassifier } from './classifier.js';
 import defaultAlphabet from '../asl_alphabet.json';
 
@@ -14,6 +15,16 @@ const handIndicator = document.getElementById('hand-indicator');
 const handIndicatorText = document.getElementById('hand-indicator-text');
 const debugCoords = document.getElementById('debug-coords');
 const chkStrictMode = document.getElementById('chk-strict-mode');
+const modeWordsRadio = document.getElementById('mode-words');
+const modeLettersRadio = document.getElementById('mode-letters');
+
+// Interpret mode: 'words' or 'letters'
+let interpretMode = 'words';
+
+if (modeWordsRadio && modeLettersRadio) {
+  modeWordsRadio.addEventListener('change', () => { if (modeWordsRadio.checked) interpretMode = 'words'; });
+  modeLettersRadio.addEventListener('change', () => { if (modeLettersRadio.checked) interpretMode = 'letters'; });
+}
 
 // Controls
 const toggleCameraBtn = document.getElementById('toggle-camera-btn');
@@ -52,6 +63,7 @@ const btnExportDataset = document.getElementById('btn-export-dataset');
 const btnImportDatasetTrigger = document.getElementById('btn-import-dataset-trigger');
 const importDatasetFile = document.getElementById('import-dataset-file');
 const btnClearDataset = document.getElementById('btn-clear-dataset');
+const trainingSaveStatus = document.getElementById('training-save-status');
 
 // App State
 let activeTab = 'translate';
@@ -60,6 +72,9 @@ let isSkeletonVisible = true;
 let handsDetector = null;
 let cameraManager = null;
 let currentHandList = null;
+let faceMesh = null;
+let currentFaceLandmarks = null;
+let currentFaceEmotion = { label: 'NO FACE', confidence: 0 };
 
 // Performance
 let lastFrameTime = performance.now();
@@ -82,6 +97,71 @@ let captureThrottleTime = 0;
 
 // Initialize Classifier
 const classifier = new ASLClassifier();
+
+const ROBOFLOW_API_URL = 'https://serverless.roboflow.com';
+const ROBOFLOW_MODEL_ID = 'hand-sign-tsze0/4';
+const ROBOFLOW_REQUEST_INTERVAL_MS = 850;
+const ROBOFLOW_RESULT_TTL_MS = 1200;
+const ROBOFLOW_CROP_SIZE = 224;
+const ROBOFLOW_MIN_CONFIDENCE = 0.38;
+const BACKEND_BASE_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
+const UPLOADER_TAG_KEY = 'asl_uploader_tag';
+
+let roboflowInFlight = false;
+let lastRoboflowRequestAt = 0;
+let latestRoboflowPrediction = null;
+let latestRoboflowPredictionAt = 0;
+
+function getUploaderTag() {
+  let tag = localStorage.getItem(UPLOADER_TAG_KEY);
+  if (!tag) {
+    tag = (crypto?.randomUUID?.() || `anon-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    localStorage.setItem(UPLOADER_TAG_KEY, tag);
+  }
+  return tag;
+}
+
+async function saveTrainingSampleToBackend(label, handList, handednessList, aspectRatio, imagePath = null) {
+  if (!handList || handList.length === 0) return null;
+
+  const landmarks = handList[0];
+  const handedness = handednessList?.[0] || 'Right';
+  const features = classifier.normalize(landmarks, handedness, aspectRatio);
+
+  if (!features) return null;
+
+  const payload = {
+    label,
+    landmarks,
+    features,
+    numHands: handList.length,
+    handedness,
+    imagePath,
+    source: 'webcam',
+    quality: 100,
+    approved: false,
+    uploaderTag: getUploaderTag(),
+    sessionId: null
+  };
+
+  if (trainingSaveStatus) {
+    trainingSaveStatus.classList.remove('success', 'error');
+    trainingSaveStatus.classList.add('saving');
+    trainingSaveStatus.textContent = 'Supabase save status: saving sample...';
+  }
+
+  const response = await axios.post(`${BACKEND_BASE_URL}/api/training/sample`, payload, {
+    headers: { 'Content-Type': 'application/json' }
+  });
+
+  if (trainingSaveStatus) {
+    trainingSaveStatus.classList.remove('saving', 'error');
+    trainingSaveStatus.classList.add('success');
+    trainingSaveStatus.textContent = `Supabase save status: saved ${String(label || '').toUpperCase()}`;
+  }
+
+  return response.data;
+}
 
 // Motion history buffer specifically for dynamic letters J and Z
 let motionHistory = [];
@@ -148,6 +228,142 @@ const playBeep = (freq = 440, duration = 0.15, type = 'sine') => {
   }
 };
 
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+
+function getRoboflowApiKey() {
+  return (localStorage.getItem('roboflow_api_key') || '').trim();
+}
+
+function buildHandCropBase64(handList) {
+  if (!handList || handList.length === 0) return null;
+  if (!videoElement.videoWidth || !videoElement.videoHeight) return null;
+
+  const landmarks = handList[0];
+  let minX = 1;
+  let minY = 1;
+  let maxX = 0;
+  let maxY = 0;
+
+  landmarks.forEach((point) => {
+    minX = Math.min(minX, point.x);
+    minY = Math.min(minY, point.y);
+    maxX = Math.max(maxX, point.x);
+    maxY = Math.max(maxY, point.y);
+  });
+
+  const handWidth = Math.max(maxX - minX, 0.12);
+  const handHeight = Math.max(maxY - minY, 0.12);
+  const padX = handWidth * 0.35;
+  const padY = handHeight * 0.35;
+
+  const sourceX = clamp((minX - padX) * videoElement.videoWidth, 0, videoElement.videoWidth - 1);
+  const sourceY = clamp((minY - padY) * videoElement.videoHeight, 0, videoElement.videoHeight - 1);
+  const sourceWidth = clamp((handWidth + padX * 2) * videoElement.videoWidth, 1, videoElement.videoWidth - sourceX);
+  const sourceHeight = clamp((handHeight + padY * 2) * videoElement.videoHeight, 1, videoElement.videoHeight - sourceY);
+
+  const cropCanvas = document.createElement('canvas');
+  cropCanvas.width = ROBOFLOW_CROP_SIZE;
+  cropCanvas.height = ROBOFLOW_CROP_SIZE;
+
+  const cropCtx = cropCanvas.getContext('2d');
+  if (!cropCtx) return null;
+
+  cropCtx.drawImage(
+    videoElement,
+    sourceX,
+    sourceY,
+    sourceWidth,
+    sourceHeight,
+    0,
+    0,
+    ROBOFLOW_CROP_SIZE,
+    ROBOFLOW_CROP_SIZE
+  );
+
+  const dataUrl = cropCanvas.toDataURL('image/jpeg', 0.88);
+  return dataUrl.split(',')[1] || null;
+}
+
+function parseRoboflowPrediction(payload) {
+  if (!payload) return null;
+
+  if (typeof payload.top === 'string' && payload.top.trim()) {
+    return {
+      label: payload.top.trim().toUpperCase(),
+      confidence: Number(payload.confidence ?? payload.top_confidence ?? 0)
+    };
+  }
+
+  const predictions = Array.isArray(payload.predictions)
+    ? payload.predictions
+    : payload.predictions && typeof payload.predictions === 'object'
+      ? Object.values(payload.predictions)
+      : [];
+
+  const topPrediction = predictions[0];
+  if (!topPrediction) return null;
+
+  const label = (topPrediction.class || topPrediction.label || topPrediction.name || '').trim();
+  if (!label) return null;
+
+  return {
+    label: label.toUpperCase(),
+    confidence: Number(topPrediction.confidence ?? topPrediction.class_confidence ?? 0)
+  };
+}
+
+function getFreshRoboflowPrediction() {
+  if (!latestRoboflowPrediction) return null;
+  if (performance.now() - latestRoboflowPredictionAt > ROBOFLOW_RESULT_TTL_MS) return null;
+  return latestRoboflowPrediction;
+}
+
+async function requestRoboflowPrediction(handList) {
+  const now = performance.now();
+  if (roboflowInFlight || now - lastRoboflowRequestAt < ROBOFLOW_REQUEST_INTERVAL_MS) {
+    return;
+  }
+
+  const cropBase64 = buildHandCropBase64(handList);
+  if (!cropBase64) return;
+
+  lastRoboflowRequestAt = now;
+  roboflowInFlight = true;
+
+  try {
+    const params = {
+      format: 'json',
+      confidence: 'default',
+      image_type: 'base64',
+      source: 'external'
+    };
+
+    const apiKey = getRoboflowApiKey();
+    if (apiKey) {
+      params.api_key = apiKey;
+    }
+
+    const response = await axios.post(
+      `${ROBOFLOW_API_URL}/${ROBOFLOW_MODEL_ID}`,
+      {
+        image: cropBase64,
+        image_type: 'base64'
+      },
+      { params }
+    );
+
+    const parsed = parseRoboflowPrediction(response.data);
+    if (parsed && parsed.label && parsed.confidence >= ROBOFLOW_MIN_CONFIDENCE) {
+      latestRoboflowPrediction = parsed;
+      latestRoboflowPredictionAt = performance.now();
+    }
+  } catch (error) {
+    console.warn('Roboflow inference failed, falling back to local classifier:', error);
+  } finally {
+    roboflowInFlight = false;
+  }
+}
+
 async function initApp() {
   overlayText.innerText = "Loading MediaPipe Models...";
   modelStatus.className = "status-indicator loading";
@@ -162,11 +378,32 @@ async function initApp() {
     handsDetector.setOptions({
       maxNumHands: 1,
       modelComplexity: 1,
-      minDetectionConfidence: 0.40,
-      minTrackingConfidence: 0.40
+      // Lowered a bit to be more permissive for low-light / low-res cams
+      minDetectionConfidence: 0.25,
+      minTrackingConfidence: 0.25
     });
 
     handsDetector.onResults(onResults);
+    // FaceMesh optionally provides facial expression heuristics. Disabled by default
+    // because some CDN builds trigger wasm/asset fetch errors on certain setups.
+    const USE_FACEMESH = false;
+    if (USE_FACEMESH) {
+      try {
+        faceMesh = new FaceMesh({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}` });
+        faceMesh.setOptions({
+          maxNumFaces: 1,
+          refineLandmarks: true,
+          minDetectionConfidence: 0.45,
+          minTrackingConfidence: 0.45
+        });
+        faceMesh.onResults(onFaceResults);
+      } catch (fex) {
+        console.warn('FaceMesh initialization failed:', fex);
+        faceMesh = null;
+      }
+    } else {
+      console.info('FaceMesh disabled to avoid wasm/asset CDN errors. Set USE_FACEMESH=true to enable.');
+    }
     modelStatus.className = "status-indicator online";
     modelStatus.querySelector('.status-label').innerText = "MediaPipe Ready";
   } catch (e) {
@@ -186,8 +423,12 @@ async function initApp() {
       onFrame: async () => {
         if (isCameraActive) {
           const startTime = performance.now();
-          await handsDetector.send({ image: videoElement });
-          
+          // Send image to both detectors; don't block one on the other
+          const promises = [];
+          if (handsDetector) promises.push(handsDetector.send({ image: videoElement }));
+          if (faceMesh) promises.push(faceMesh.send({ image: videoElement }));
+          await Promise.all(promises);
+
           const endTime = performance.now();
           const latency = Math.round(endTime - startTime);
           latencyHistory.push(latency);
@@ -222,6 +463,55 @@ async function initApp() {
   setupEventListeners();
 }
 
+function onFaceResults(results) {
+  if (!results || !results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0) {
+    currentFaceLandmarks = null;
+    currentFaceEmotion = { label: 'NO FACE', confidence: 0 };
+    const fi = document.getElementById('face-indicator');
+    const fit = document.getElementById('face-indicator-text');
+    if (fi) fi.classList.add('hidden');
+    if (fit) fit.innerText = 'No Face';
+    return;
+  }
+
+  currentFaceLandmarks = results.multiFaceLandmarks[0];
+  // Simple heuristic expressions using a few landmark indices
+  const lm = currentFaceLandmarks;
+  const get = (i) => ({ x: lm[i].x, y: lm[i].y, z: lm[i].z });
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+
+  // Indices for common points (MediaPipe FaceMesh):
+  const MOUTH_LEFT = 61, MOUTH_RIGHT = 291, MOUTH_TOP = 13, MOUTH_BOTTOM = 14;
+  const LEFT_EYE_TOP = 159, LEFT_EYE_BOTTOM = 145, RIGHT_EYE_TOP = 386, RIGHT_EYE_BOTTOM = 374;
+
+  const minX = Math.min(...lm.map(p => p.x));
+  const maxX = Math.max(...lm.map(p => p.x));
+  const minY = Math.min(...lm.map(p => p.y));
+  const maxY = Math.max(...lm.map(p => p.y));
+  const faceWidth = Math.max(0.001, maxX - minX);
+  const faceHeight = Math.max(0.001, maxY - minY);
+
+  const mouthWidth = dist(get(MOUTH_LEFT), get(MOUTH_RIGHT)) / faceWidth;
+  const mouthHeight = dist(get(MOUTH_TOP), get(MOUTH_BOTTOM)) / faceHeight;
+  const leftEyeOpen = dist(get(LEFT_EYE_TOP), get(LEFT_EYE_BOTTOM)) / faceHeight;
+  const rightEyeOpen = dist(get(RIGHT_EYE_TOP), get(RIGHT_EYE_BOTTOM)) / faceHeight;
+
+  // Heuristics
+  let emotion = 'NEUTRAL';
+  let conf = 0.0;
+  if (mouthHeight > 0.30) { emotion = 'SURPRISED'; conf = clamp(mouthHeight, 0.3, 1); }
+  else if (mouthWidth > 0.36 && mouthHeight < 0.12) { emotion = 'SMILE'; conf = clamp(mouthWidth, 0.36, 1); }
+  else if ((leftEyeOpen < 0.02 && rightEyeOpen < 0.02)) { emotion = 'EYES_CLOSED'; conf = 0.9; }
+  else { emotion = 'NEUTRAL'; conf = 0.5; }
+
+  currentFaceEmotion = { label: emotion, confidence: conf };
+
+  const fi = document.getElementById('face-indicator');
+  const fit = document.getElementById('face-indicator-text');
+  if (fi) fi.classList.remove('hidden');
+  if (fit) fit.innerText = `${emotion}`;
+}
+
 function onResults(results) {
   if (canvasElement.width !== videoElement.videoWidth || canvasElement.height !== videoElement.videoHeight) {
     canvasElement.width = videoElement.videoWidth;
@@ -233,25 +523,43 @@ function onResults(results) {
   // Filter out low-confidence hand detections to avoid background noise triggering 2-hand mode
   let validHands = [];
   let validHandedness = [];
-  if (results.multiHandLandmarks && results.multiHandedness) {
+  if (results.multiHandLandmarks) {
     const rawHands = [];
+
+    // If handedness data is present, use it; otherwise fall back to a default label
+    const hasHandedness = Array.isArray(results.multiHandedness) && results.multiHandedness.length === results.multiHandLandmarks.length;
+
     for (let i = 0; i < results.multiHandLandmarks.length; i++) {
-      const score = results.multiHandedness[i].score;
-      if (score >= 0.40) { // Strict score threshold for hand detection validity
-        // MediaPipe's raw handedness assumes a mirrored selfie view. Since our camera stream
-        // is unmirrored before it is processed, raw labels are inverted compared to physical hands.
-        const rawLabel = results.multiHandedness[i].label; // "Left" or "Right"
+      let score = 0.5;
+      let rawLabel = 'Right';
+
+      if (hasHandedness) {
+        const handednessEntry = results.multiHandedness[i];
+        if (handednessEntry) {
+          if (typeof handednessEntry.score === 'number') {
+            score = handednessEntry.score;
+          } else if (handednessEntry.classification && handednessEntry.classification[0] && typeof handednessEntry.classification[0].score === 'number') {
+            score = handednessEntry.classification[0].score;
+          }
+          rawLabel = handednessEntry.label || (handednessEntry.classification && handednessEntry.classification[0] && handednessEntry.classification[0].label) || rawLabel;
+        }
+      }
+
+      // Accept lower scores to be permissive; if handedness is missing we still accept landmarks
+      if (score >= 0.20 || !hasHandedness) {
         const physicalLabel = rawLabel === "Left" ? "Right" : "Left";
-        rawHands.push({
-          landmarks: results.multiHandLandmarks[i],
-          label: physicalLabel,
-          score: score
-        });
+        rawHands.push({ landmarks: results.multiHandLandmarks[i], label: physicalLabel, score });
       }
     }
 
     validHands = rawHands.map(h => h.landmarks);
     validHandedness = rawHands.map(h => h.label);
+
+    // Debug: if landmarks arrived but were previously filtered, show counts
+    if (debugCoords) {
+      debugCoords.innerText = `Detected hands: ${validHands.length} | Handedness data: ${hasHandedness}`;
+    }
+    console.debug('onResults: multiHandLandmarks count=', results.multiHandLandmarks.length, 'validHands=', validHands.length, 'hasHandedness=', hasHandedness);
   }
 
   const numHands = validHands.length;
@@ -339,7 +647,7 @@ function drawHandSkeleton(landmarks, colors) {
   canvasCtx.shadowBlur = 0;
 }
 
-function checkMotionGestures(handList, currentPred) {
+function checkMotionGestures(handList, currentPred, interpretMode = 'words') {
   if (!handList || handList.length !== 1) {
     motionHistory = [];
     return null;
@@ -389,6 +697,39 @@ function checkMotionGestures(handList, currentPred) {
           motionHistory = []; // Reset trace
           return { label: "J", confidence: 0.95 };
         }
+      }
+    }
+  }
+
+  // 0. Detect "HELLO" (wave): starts from open-hand (B-like) and shows lateral oscillation
+  // Only detect HELLO when interpretMode === 'words' to avoid conflicts with letters
+  if (interpretMode === 'words' && (currentPred === "B" || currentPred === "HELLO")) {
+    const xs = motionHistory.map(pt => pt.index.x);
+    const ys = motionHistory.map(pt => pt.index.y);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const dx = maxX - minX;
+    const dy = maxY - minY;
+
+    if (dx > 0.10 && dy < 0.12) {
+      // Count direction changes using 3-frame smoothing
+      const smoothed = [];
+      for (let i = 0; i < xs.length - 2; i++) smoothed.push((xs[i] + xs[i+1] + xs[i+2]) / 3);
+      let dirChanges = 0;
+      let currentDir = 0;
+      for (let i = 1; i < smoothed.length; i++) {
+        const diff = smoothed[i] - smoothed[i-1];
+        if (Math.abs(diff) > 0.006) {
+          const newDir = diff > 0 ? 1 : -1;
+          if (currentDir !== 0 && newDir !== currentDir) dirChanges++;
+          currentDir = newDir;
+        }
+      }
+      if (dirChanges >= 2) {
+        motionHistory = [];
+        return { label: "HELLO", confidence: 0.95 };
       }
     }
   }
@@ -446,7 +787,16 @@ function processTranslation(handList, handednessList = ["Right"]) {
   const height = videoElement.videoHeight || 480;
   const aspectRatio = width / height;
   const isStrict = chkStrictMode ? chkStrictMode.checked : false;
-  let prediction = classifier.classify(handList, handednessList, 5, aspectRatio, isStrict);
+  const stabilityConfidenceGate = isStrict ? 0.72 : 0.58;
+  // Only use Roboflow/web-hosted model when user selected Interpret Words mode
+  if (interpretMode === 'words') {
+    void requestRoboflowPrediction(handList);
+  }
+
+  const localPrediction = classifier.classify(handList, handednessList, 5, aspectRatio, isStrict);
+  const roboflowPrediction = (interpretMode === 'words') ? getFreshRoboflowPrediction() : null;
+  let prediction = roboflowPrediction || localPrediction;
+  console.debug('processTranslation: local=', localPrediction, 'roboflow=', roboflowPrediction, 'chosen=', prediction);
   
   // Check if we are currently locked in a motion prediction
   if (motionLockFrames > 0) {
@@ -454,11 +804,22 @@ function processTranslation(handList, handednessList = ["Right"]) {
     motionLockFrames--;
   } else {
     // Inject motion tracing detection overrides for J & Z
-    const motionPred = checkMotionGestures(handList, prediction.label);
+    const motionPred = checkMotionGestures(handList, prediction.label, interpretMode);
     if (motionPred) {
       prediction = motionPred;
       motionLockLabel = motionPred.label;
       motionLockFrames = 12; // Hold J/Z for 12 frames to let the smoothing buffer stabilize and show it clearly
+    }
+  }
+
+  // If user selected Words mode, suppress single-letter predictions to avoid
+  // letters being appended when the user wants words only. This lets Roboflow
+  // or motion/word rules drive multi-letter outputs. Single-letter motions
+  // (like J/Z) will be suppressed here; switch to Letters mode to enable them.
+  if (interpretMode === 'words' && prediction && typeof prediction.label === 'string') {
+    const lbl = prediction.label.trim().toUpperCase();
+    if (/^[A-Z]$/.test(lbl)) {
+      prediction = { label: 'NO SIGN', confidence: 0 };
     }
   }
   
@@ -496,9 +857,14 @@ function processTranslation(handList, handednessList = ["Right"]) {
     predConfidenceFill.style.width = '0%';
     predConfidenceText.innerText = '0%';
   }
+  console.debug('processTranslation: displayed=', predText.innerText, 'confidence=', predConfidenceText.innerText);
 
   // Smooth prediction
-  predictionBuffer.push(prediction.label);
+  const bufferedLabel = prediction.label !== "NO SIGN" && prediction.confidence >= stabilityConfidenceGate
+    ? prediction.label
+    : "NO SIGN";
+
+  predictionBuffer.push(bufferedLabel);
   if (predictionBuffer.length > PREDICTION_BUFFER_SIZE) {
     predictionBuffer.shift();
   }
@@ -522,8 +888,15 @@ function processTranslation(handList, handednessList = ["Right"]) {
     if (dominantLabel === lastStabilizedWord) {
       stableCount++;
       if (stableCount === STABILITY_LOCK_THRESHOLD) {
-        appendWordToSentence(dominantLabel);
-        playBeep(650, 0.05, 'triangle');
+          // Respect user's interpret mode: in 'letters' mode, do not accumulate multi-letter words
+          const isMultiLetter = typeof dominantLabel === 'string' && dominantLabel.trim().length > 1;
+          if (!(interpretMode === 'letters' && isMultiLetter)) {
+            appendWordToSentence(dominantLabel);
+            playBeep(650, 0.05, 'triangle');
+          } else {
+            // Provide subtle feedback that a word was detected but not accumulated in Letters mode
+            playBeep(220, 0.06, 'sine');
+          }
       }
     } else {
       lastStabilizedWord = dominantLabel;
@@ -538,6 +911,8 @@ function handleNoHand() {
   motionHistory = []; // Clear motion tracker when hands leave screen
   motionLockFrames = 0; // Reset motion display lock
   motionLockLabel = '';
+  latestRoboflowPrediction = null;
+  latestRoboflowPredictionAt = 0;
   predText.innerText = "NO SIGN";
   predText.classList.add('empty');
   predConfidenceFill.style.width = '0%';
@@ -557,11 +932,31 @@ function handleNoHand() {
 }
 
 function appendWordToSentence(word) {
+  const filipinoMap = {
+    'HELLO': 'KUMUSTA',
+    'YES': 'OO',
+    'NO': 'HINDI',
+    'I LOVE YOU': 'MAHAL KITA',
+    'THANK YOU': 'SALAMAT',
+    'THANKS': 'SALAMAT',
+    'GOOD': 'MABUTI',
+    'PLEASE': 'PAWANG',
+    'BYE': 'PAALAM',
+    'HELLO (WAVE)': 'KUMUSTA'
+  };
+
+  const normalized = (word || '').toString().trim().toUpperCase();
+  const translated = (interpretMode === 'words' && normalized.length > 1 && filipinoMap[normalized]) ? filipinoMap[normalized] : word;
+
   const currentText = sentenceOutput.value.trim();
-  if (word.length === 1) {
-    sentenceOutput.value = currentText ? currentText + word : word;
+  if ((translated || '').length === 1) {
+    sentenceOutput.value = currentText ? currentText + translated : translated;
   } else {
-    sentenceOutput.value = currentText ? currentText + " " + word : word;
+    // Optionally append detected facial expression for context when in Words mode
+    const emotionTag = (interpretMode === 'words' && currentFaceEmotion && currentFaceEmotion.label && currentFaceEmotion.label !== 'NEUTRAL' && currentFaceEmotion.label !== 'NO FACE')
+      ? ` (${currentFaceEmotion.label})`
+      : '';
+    sentenceOutput.value = currentText ? currentText + " " + translated + emotionTag : translated + emotionTag;
   }
   sentenceOutput.scrollTop = sentenceOutput.scrollHeight;
 }
@@ -585,6 +980,16 @@ function processTraining(handList, handednessList = ["Right"]) {
   const aspectRatio = width / height;
   const success = classifier.addSample(label, handList, handednessList, aspectRatio);
   if (success) {
+    void saveTrainingSampleToBackend(label, handList, handednessList, aspectRatio)
+      .catch((error) => {
+        if (trainingSaveStatus) {
+          trainingSaveStatus.classList.remove('saving', 'success');
+          trainingSaveStatus.classList.add('error');
+          trainingSaveStatus.textContent = 'Supabase save status: save failed';
+        }
+        console.warn('Backend sample save failed:', error);
+      });
+
     capturedSamplesCount++;
     captureCountEl.innerText = capturedSamplesCount;
     

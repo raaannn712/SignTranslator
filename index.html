@@ -14,6 +14,7 @@
   <!-- MediaPipe CDN -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
   
   <link rel="stylesheet" href="/style.css">
 </head>
@@ -63,6 +64,10 @@
             <div id="hand-indicator" class="hand-indicator-tag hidden">
               <span class="material-icons-round">back_hand</span>
               <span id="hand-indicator-text">No Hand</span>
+            </div>
+            <div id="face-indicator" class="hand-indicator-tag hidden" style="right: 120px;">
+              <span class="material-icons-round">tag_faces</span>
+              <span id="face-indicator-text">No Face</span>
             </div>
           </div>
           
@@ -130,6 +135,17 @@
                 <input type="checkbox" id="chk-strict-mode" style="cursor: pointer; accent-color: var(--accent-cyan); width: 16px; height: 16px; border-radius: 4px;">
                 <span>Strict Mode</span>
               </label>
+              <div class="interpret-toggle" style="display:flex; align-items:center; gap:8px; margin-left:12px;">
+                <label style="font-size:13px; color:var(--text-secondary);">Interpret:</label>
+                <label style="display:flex; gap:6px; align-items:center; font-size:13px; color:var(--text-secondary);">
+                  <input type="radio" name="interpret-mode" id="mode-words" value="words" checked>
+                  <span>Words</span>
+                </label>
+                <label style="display:flex; gap:6px; align-items:center; font-size:13px; color:var(--text-secondary);">
+                  <input type="radio" name="interpret-mode" id="mode-letters" value="letters">
+                  <span>Letters</span>
+                </label>
+              </div>
             </div>
             <div class="prediction-large-container">
               <div id="pred-text" class="prediction-word">NO SIGN</div>
@@ -212,6 +228,7 @@
                   <span class="material-icons-round">sensors</span>
                   <span>Capture Sample</span>
                 </button>
+                <div id="training-save-status" class="training-save-status">Supabase save status: idle</div>
               </div>
             </div>
           </div>

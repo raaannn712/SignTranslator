@@ -367,6 +367,41 @@ body {
   box-shadow: 0 8px 24px rgba(0, 240, 255, 0.2);
 }
 
+/* Interpret Mode Toggle (Words / Letters) */
+.interpret-toggle {
+  align-items: center;
+  gap: 10px;
+}
+.interpret-toggle > label { /* the small 'Interpret:' label */
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-weight: 700;
+}
+.interpret-toggle label { cursor: pointer; }
+.interpret-toggle label span {
+  display: inline-block;
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  background: rgba(255,255,255,0.02);
+  transition: var(--transition-fast);
+}
+.interpret-toggle input[type="radio"] { display: none; }
+.interpret-toggle label input[type="radio"] + span { /* default */ }
+.interpret-toggle label input[type="radio"]:checked + span,
+.interpret-toggle label span.active {
+  background: var(--accent-glow);
+  color: var(--bg-darker);
+  box-shadow: 0 8px 20px rgba(0,240,255,0.12);
+}
+
+/* Increase prominence on smaller screens by enlarging the toggle */
+@media (max-width: 720px) {
+  .interpret-toggle label span { padding: 12px 16px; font-size: 16px; }
+}
+
 /* Tab Panels */
 .panel {
   display: none;
@@ -611,6 +646,39 @@ body {
 .help-text {
   font-size: 13px;
   color: var(--text-secondary);
+}
+
+.training-save-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-light);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
+.training-save-status.success {
+  border-color: rgba(21, 191, 89, 0.45);
+  color: var(--accent-success);
+  background: rgba(21, 191, 89, 0.1);
+}
+
+.training-save-status.error {
+  border-color: rgba(240, 80, 120, 0.45);
+  color: var(--accent-danger);
+  background: rgba(240, 80, 120, 0.1);
+}
+
+.training-save-status.saving {
+  border-color: rgba(0, 240, 255, 0.45);
+  color: var(--accent-cyan);
+  background: rgba(0, 240, 255, 0.1);
 }
 
 /* Dataset Management UI */
