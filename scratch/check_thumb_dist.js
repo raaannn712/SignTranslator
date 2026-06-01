@@ -4,7 +4,7 @@ try {
   const fileContent = fs.readFileSync('asl_alphabet.json', 'utf8');
   const samples = JSON.parse(fileContent);
 
-  const getXs = (label) => {
+  const getCoordinates = (label) => {
     const matching = samples.filter(s => s.label === label);
     console.log(`=== ${label} (${matching.length} samples) ===`);
     matching.slice(0, 5).forEach((sample, idx) => {
@@ -17,13 +17,14 @@ try {
           z: features[i * 3 + 2]
         });
       }
-      console.log(`Sample ${idx}: lm[8].x = ${lm[8].x.toFixed(3)}, lm[12].x = ${lm[12].x.toFixed(3)}, diff(8-12) = ${(lm[8].x - lm[12].x).toFixed(3)}`);
+      const dy4_9 = lm[4].y - lm[9].y;
+      console.log(`Sample ${idx}: lm[4].y = ${lm[4].y.toFixed(3)}, lm[9].y = ${lm[9].y.toFixed(3)}, diff(4-9) = ${dy4_9.toFixed(3)}`);
     });
   };
 
-  getXs('R');
-  getXs('U');
-  getXs('V');
+  getCoordinates('H');
+  getCoordinates('K');
+  getCoordinates('P');
 } catch (e) {
   console.error(e);
 }

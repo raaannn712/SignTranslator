@@ -138,9 +138,10 @@ export class ASLClassifier {
     const dxMcp = (mcp.x - wrist.x) * aspectRatio;
     const dyMcp = mcp.y - wrist.y;
     const rotationAngle = Math.atan2(dxMcp, -dyMcp);
+    const rawYDiff = mcp.y - wrist.y;
 
     // 1. Try Rule-Based classification first for core fingerspelling letters
-    const ruleLabel = this.classifyRuleBased(testFeature, rotationAngle);
+    const ruleLabel = this.classifyRuleBased(testFeature, rotationAngle, rawYDiff);
     if (ruleLabel) {
       return {
         label: ruleLabel,
@@ -241,7 +242,7 @@ export class ASLClassifier {
    * Rule-Based heuristic classifier for core fingerspelling letters.
    * Utilizes finger extension thresholds on rotated normalized 3D landmarks.
    */
-  classifyRuleBased(features, rotationAngle = 0) {
+  classifyRuleBased(features, rotationAngle = 0, rawYDiff = -0.5) {
     const lm = [];
     for (let i = 0; i < 21; i++) {
       lm.push({
@@ -324,18 +325,22 @@ export class ASLClassifier {
     if (extIndex && extMiddle && isStraightIndex && isStraightMiddle && !extRing && !extPinky) {
       const thumbTipToKnuckleYDiff = lm[4].y - lm[9].y;
 
-      // Classify based on vertical position of thumb tip in normalized rotated space
+      // H-Check (Sideways hand pointing horizontally sideways/up, not down)
+      if (angleDeg >= 45 && rawYDiff <= 0.1) {
+        return "H"; // Sideways is H
+      }
+
+      // P-Check (Downward hand pointing vertically/diagonally down)
+      if (rawYDiff > 0.1) {
+        return "P"; // Downward is P
+      }
+
+      // K-Check (Upward hand pointing vertically, thumb extended high)
       if (thumbTipToKnuckleYDiff < 0.18) {
         return "K"; // Thumb extended high up is K
       }
-      if (thumbTipToKnuckleYDiff < 0.32) {
-        return "P"; // Thumb extended halfway down is P
-      }
 
-      // Otherwise, thumb is folded across the palm (U, V, R, H)
-      if (angleDeg >= 45) {
-        return "H"; // Sideways is H
-      }
+      // Otherwise, thumb is folded across the palm (U, V, R)
       const indexMiddleDist = Math.hypot(lm[8].x - lm[12].x, lm[8].y - lm[12].y);
       if (lm[8].x < lm[12].x) {
         return "R"; // Crossed
