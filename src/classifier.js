@@ -244,11 +244,12 @@ export class ASLClassifier {
       });
     }
 
+    const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+
     // Helper to calculate the straightness ratio of a finger (1.0 = fully straight, <0.8 = bent/curved)
     const getStraightness = (tip, dip, pip, mcp) => {
-      const d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
-      const straightDist = d(lm[tip], lm[mcp]);
-      const segmentSum = d(lm[tip], lm[dip]) + d(lm[dip], lm[pip]) + d(lm[pip], lm[mcp]);
+      const straightDist = dist(lm[tip], lm[mcp]);
+      const segmentSum = dist(lm[tip], lm[dip]) + dist(lm[dip], lm[pip]) + dist(lm[pip], lm[mcp]);
       return straightDist / (segmentSum || 1.0);
     };
 
@@ -263,7 +264,8 @@ export class ASLClassifier {
     const extRing = (lm[13].y - lm[16].y) > 0.35;
     const extPinky = (lm[17].y - lm[20].y) > 0.28;
     
-    const thumbExtended = lm[4].x > 0.55;
+    // Scale-invariant, rotation-independent thumb extension check (D: folded, G/L: extended)
+    const thumbExtended = dist(lm[4], lm[9]) > 0.58;
 
     // 1. B & C: Index, Middle, Ring, Pinky extended
     if (extIndex && extMiddle && extRing && extPinky) {
