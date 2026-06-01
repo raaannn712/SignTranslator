@@ -374,8 +374,8 @@ function checkMotionGestures(handList, currentPred) {
     const dy = maxY - minY;
     const dx = maxX - minX;
 
-    // More forgiving curve size requirements (down from 0.15/0.08)
-    if (dy > 0.08 && dx > 0.04) {
+    // Optimized curve size requirements (dy > 0.12, dx > 0.05) to prevent drift false-positives
+    if (dy > 0.12 && dx > 0.05) {
       const lowestPointIdx = ys.indexOf(maxY);
       // Lowest point should happen toward the middle-latter part of the gesture
       if (lowestPointIdx > 2 && lowestPointIdx < motionHistory.length - 1) {
@@ -393,8 +393,8 @@ function checkMotionGestures(handList, currentPred) {
     }
   }
 
-  // 2. Detect "Z" (Starts in 'D'/'L'/'G' shape or temporary 'NO SIGN', traces a horizontal zig-zag)
-  if (currentPred === "D" || currentPred === "L" || currentPred === "G" || currentPred === "U" || currentPred === "Z" || currentPred === "NO SIGN") {
+  // 2. Detect "Z" (Starts in 'D'/'L'/'G'/'U'/'Z' pointing shapes to avoid triggering on NO SIGN transitions)
+  if (currentPred === "D" || currentPred === "L" || currentPred === "G" || currentPred === "U" || currentPred === "Z") {
     const xs = motionHistory.map(pt => pt.index.x);
     const ys = motionHistory.map(pt => pt.index.y);
 
@@ -406,8 +406,8 @@ function checkMotionGestures(handList, currentPred) {
     const dx = maxX - minX;
     const dy = maxY - minY;
 
-    // More forgiving box size requirements (down from 0.15/0.12)
-    if (dx > 0.08 && dy > 0.06) {
+    // Optimized size requirements (dx > 0.11, dy > 0.08)
+    if (dx > 0.11 && dy > 0.08) {
       // Detect horizontal direction reversals
       let dirChanges = 0;
       let currentDir = 0;
@@ -420,7 +420,8 @@ function checkMotionGestures(handList, currentPred) {
 
       for (let i = 1; i < smoothedXs.length; i++) {
         const diff = smoothedXs[i] - smoothedXs[i - 1];
-        if (Math.abs(diff) > 0.004) {
+        // Filter out slow drift and jitter by requiring larger frame-to-frame change (diff > 0.007)
+        if (Math.abs(diff) > 0.007) {
           const newDir = diff > 0 ? 1 : -1;
           if (currentDir !== 0 && newDir !== currentDir) {
             dirChanges++;
