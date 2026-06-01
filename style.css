@@ -831,3 +831,162 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.2);
 }
+
+/* ==========================================
+   Responsive Mobile & Tablet Enhancements
+   ========================================== */
+
+@media (max-width: 768px) {
+  body {
+    padding: 12px;
+  }
+  
+  .app-container {
+    gap: 16px;
+  }
+  
+  .app-header {
+    padding: 12px 16px;
+  }
+  
+  .card.glass {
+    border-radius: var(--border-radius-md);
+  }
+  
+  .viewport-wrapper {
+    border-radius: var(--border-radius-md) var(--border-radius-md) 0 0;
+  }
+  
+  .prediction-card,
+  .sentence-card,
+  .trainer-card,
+  .dataset-card {
+    padding: 16px;
+  }
+  
+  .prediction-word {
+    font-size: 44px;
+  }
+  
+  .prediction-large-container {
+    min-height: 150px;
+    padding: 16px;
+  }
+  
+  .gesture-table th, 
+  .gesture-table td {
+    padding: 10px 12px;
+    font-size: 13px;
+  }
+}
+
+@media (max-width: 600px) {
+  .app-header {
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 12px;
+    padding: 16px;
+  }
+  
+  .logo-area {
+    flex-direction: column;
+    gap: 8px;
+  }
+  
+  .system-status {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+  }
+  
+  .status-indicator {
+    flex: 1;
+    min-width: 130px;
+    justify-content: center;
+    padding: 6px 12px;
+    font-size: 12px;
+  }
+}
+
+@media (max-width: 480px) {
+  body {
+    padding: 8px;
+  }
+  
+  .viewport-controls {
+    padding: 10px;
+    gap: 8px;
+  }
+  
+  .viewport-controls .btn {
+    padding: 10px;
+  }
+  
+  /* Hide text inside viewport controls to save space, keeping only the icons */
+  .viewport-controls .btn span:last-child {
+    display: none;
+  }
+  
+  .viewport-controls .btn span.material-icons-round {
+    margin: 0;
+    font-size: 20px;
+  }
+  
+  .prediction-word {
+    font-size: 36px;
+  }
+  
+  .prediction-large-container {
+    min-height: 130px;
+  }
+  
+  #sentence-output {
+    height: 100px;
+    font-size: 14px;
+    padding: 12px;
+  }
+  
+  .sentence-controls {
+    flex-direction: column;
+    gap: 8px;
+  }
+  
+  .sentence-controls .btn {
+    width: 100%;
+  }
+  
+  .tab-btn {
+    font-size: 13px;
+    padding: 10px 12px;
+    gap: 6px;
+  }
+  
+  .tab-btn span.material-icons-round {
+    font-size: 16px;
+  }
+  
+  .dataset-io-actions {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  
+  .dataset-io-actions .btn {
+    flex: 1;
+    font-size: 11px;
+    padding: 6px 8px;
+  }
+  
+  .progress-ring-container {
+    transform: scale(0.85);
+    margin: -8px 0;
+  }
+  
+  .capture-section {
+    padding: 12px;
+    gap: 16px;
+  }
+}
+
