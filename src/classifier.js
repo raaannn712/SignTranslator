@@ -114,7 +114,7 @@ export class ASLClassifier {
    * @param {Array} handList - Array of hands landmarks, e.g. [hand1]
    * @param {Array} handednessList - Array of hand labels, e.g. ["Right"]
    */
-  classify(handList, handednessList = ["Right"], k = 5, aspectRatio = 1.3333) {
+  classify(handList, handednessList = ["Right"], k = 5, aspectRatio = 1.3333, isStrict = false) {
     if (!handList || handList.length === 0) {
       return { label: "NO SIGN", confidence: 0 };
     }
@@ -140,8 +140,8 @@ export class ASLClassifier {
     const rotationAngle = Math.atan2(dxMcp, -dyMcp);
     const rawYDiff = mcp.y - wrist.y;
 
-    // 1. Try Rule-Based classification first for core fingerspelling letters
-    const ruleLabel = this.classifyRuleBased(testFeature, rotationAngle, rawYDiff);
+    // 1. Try Rule-Based classification first for core fingerspelling letters (unless Strict Mode is enabled)
+    const ruleLabel = isStrict ? null : this.classifyRuleBased(testFeature, rotationAngle, rawYDiff, landmarks, aspectRatio);
     if (ruleLabel) {
       return {
         label: ruleLabel,
@@ -194,8 +194,8 @@ export class ASLClassifier {
     // Get top K nearest neighbors
     const nearest = distances.slice(0, Math.min(k, distances.length));
 
-    // Threshold check
-    const threshold = 0.90;
+    // Threshold check (stricter limit if Strict Mode is checked)
+    const threshold = isStrict ? 0.70 : 0.90;
     const isBelowThreshold = nearest[0].distance <= threshold;
 
     // Count class votes
@@ -242,7 +242,7 @@ export class ASLClassifier {
    * Rule-Based heuristic classifier for core fingerspelling letters.
    * Utilizes finger extension thresholds on rotated normalized 3D landmarks.
    */
-  classifyRuleBased(features, rotationAngle = 0, rawYDiff = -0.5) {
+  classifyRuleBased(features, rotationAngle = 0, rawYDiff = -0.5, rawLandmarks = null, aspectRatio = 1.3333) {
     const lm = [];
     for (let i = 0; i < 21; i++) {
       lm.push({
@@ -261,10 +261,10 @@ export class ASLClassifier {
       return straightDist / (segmentSum || 1.0);
     };
 
-    const isStraightIndex = getStraightness(8, 7, 6, 5) > 0.82;
-    const isStraightMiddle = getStraightness(12, 11, 10, 9) > 0.82;
-    const isStraightRing = getStraightness(16, 15, 14, 13) > 0.82;
-    const isStraightPinky = getStraightness(20, 19, 18, 17) > 0.80;
+    const isStraightIndex = getStraightness(8, 7, 6, 5) > 0.88;
+    const isStraightMiddle = getStraightness(12, 11, 10, 9) > 0.88;
+    const isStraightRing = getStraightness(16, 15, 14, 13) > 0.88;
+    const isStraightPinky = getStraightness(20, 19, 18, 17) > 0.86;
 
     // Calculate finger extensions using Y differences in normalized space
     const extIndex = (lm[5].y - lm[8].y) > 0.35;
@@ -276,6 +276,24 @@ export class ASLClassifier {
     const thumbExtended = dist(lm[4], lm[9]) > 0.58;
 
     const angleDeg = Math.abs(rotationAngle * 180 / Math.PI);
+
+    let indexAngleDeg = 0;
+    let isSidewaysFinger = false;
+    let isDownwardFinger = false;
+
+    if (rawLandmarks) {
+      const dxIndex = (rawLandmarks[8].x - rawLandmarks[5].x) * aspectRatio;
+      const dyIndex = rawLandmarks[8].y - rawLandmarks[5].y;
+      const indexAngle = Math.atan2(dxIndex, -dyIndex);
+      indexAngleDeg = Math.abs(indexAngle * 180 / Math.PI);
+      
+      if (dyIndex > 0.05 || indexAngleDeg >= 130) {
+        isDownwardFinger = true;
+      }
+      if (indexAngleDeg >= 50 && indexAngleDeg < 130) {
+        isSidewaysFinger = true;
+      }
+    }
 
     // 1. B & C: Index, Middle, Ring, Pinky extended
     if (extIndex && extMiddle && extRing && extPinky) {
@@ -309,10 +327,11 @@ export class ASLClassifier {
     
     // 6. L / G: Index extended (straight), Thumb extended, others folded
     if (extIndex && isStraightIndex && !extMiddle && !extRing && !extPinky && thumbExtended) {
-      if (angleDeg < 45) {
-        return "L"; // Vertical is L
-      } else {
+      const isG = rawLandmarks ? (indexAngleDeg >= 50 || angleDeg >= 50) : (angleDeg >= 45);
+      if (isG) {
         return "G"; // Sideways is G
+      } else {
+        return "L"; // Vertical is L
       }
     }
     
@@ -325,14 +344,22 @@ export class ASLClassifier {
     if (extIndex && extMiddle && isStraightIndex && isStraightMiddle && !extRing && !extPinky) {
       const thumbTipToKnuckleYDiff = lm[4].y - lm[9].y;
 
-      // H-Check (Sideways hand pointing horizontally sideways/up, not down)
-      if (angleDeg >= 45 && rawYDiff <= 0.1) {
+      const isDownward = rawLandmarks ? (isDownwardFinger || rawYDiff > 0.1 || angleDeg >= 130) : (rawYDiff > 0.1);
+      const isSideways = !isDownward && (rawLandmarks ? (isSidewaysFinger || angleDeg >= 50) : (angleDeg >= 45 && rawYDiff <= 0.1));
+
+      if (isSideways) {
         return "H"; // Sideways is H
       }
 
-      // P-Check (Downward hand pointing vertically/diagonally down)
-      if (rawYDiff > 0.1) {
+      if (isDownward) {
         return "P"; // Downward is P
+      }
+
+      const indexMiddleDist = Math.hypot(lm[8].x - lm[12].x, lm[8].y - lm[12].y);
+
+      // R-Check (Crossed fingers)
+      if (lm[8].x < lm[12].x && indexMiddleDist < 0.25) {
+        return "R"; // Crossed is R
       }
 
       // K-Check (Upward hand pointing vertically, thumb extended high)
@@ -340,11 +367,7 @@ export class ASLClassifier {
         return "K"; // Thumb extended high up is K
       }
 
-      // Otherwise, thumb is folded across the palm (U, V, R)
-      const indexMiddleDist = Math.hypot(lm[8].x - lm[12].x, lm[8].y - lm[12].y);
-      if (lm[8].x < lm[12].x) {
-        return "R"; // Crossed
-      }
+      // Otherwise, thumb is folded across the palm (U, V)
       if (indexMiddleDist > 0.38) {
         return "V"; // Separated
       } else {

@@ -124,7 +124,13 @@
           
           <!-- Live Prediction Display -->
           <div class="card glass prediction-card">
-            <h3>Current Gesture</h3>
+            <div class="card-header-actions" style="margin-bottom: 8px;">
+              <h3>Current Gesture</h3>
+              <label class="toggle-switch-wrapper" style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; color: var(--text-secondary); font-weight: 500;">
+                <input type="checkbox" id="chk-strict-mode" style="cursor: pointer; accent-color: var(--accent-cyan); width: 16px; height: 16px; border-radius: 4px;">
+                <span>Strict Mode</span>
+              </label>
+            </div>
             <div class="prediction-large-container">
               <div id="pred-text" class="prediction-word">NO SIGN</div>
               <div class="confidence-bar-wrapper">
@@ -245,9 +251,13 @@
               </table>
             </div>
             
-            <div class="dataset-danger-zone">
+            <div class="dataset-danger-zone" style="display: flex; flex-direction: column; gap: 8px; width: 100%;">
+              <button id="btn-wipe-dataset" class="btn btn-danger btn-full btn-icon btn-small" style="background-color: var(--accent-danger); color: var(--bg-darker);">
+                <span class="material-icons-round">delete_sweep</span>
+                <span>Wipe All Signs (Start Blank)</span>
+              </button>
               <button id="btn-clear-dataset" class="btn btn-danger-outline btn-full btn-icon btn-small">
-                <span class="material-icons-round">delete_forever</span>
+                <span class="material-icons-round">restore</span>
                 <span>Reset to Factory Default</span>
               </button>
             </div>

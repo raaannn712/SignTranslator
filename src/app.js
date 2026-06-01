@@ -13,6 +13,7 @@ const overlayText = document.getElementById('overlay-text');
 const handIndicator = document.getElementById('hand-indicator');
 const handIndicatorText = document.getElementById('hand-indicator-text');
 const debugCoords = document.getElementById('debug-coords');
+const chkStrictMode = document.getElementById('chk-strict-mode');
 
 // Controls
 const toggleCameraBtn = document.getElementById('toggle-camera-btn');
@@ -92,14 +93,16 @@ const getAlphabetArray = () => {
 };
 const alphabet = getAlphabetArray();
 
-// Load pre-bundled alphabet if no custom gestures exist yet or if upgrading dataset
-const CURRENT_DB_VERSION = "v2_rotated";
+// Load pre-bundled alphabet if no custom gestures exist yet and user hasn't explicitly cleared them
+const CURRENT_DB_VERSION = "v3_user_trained";
 const storedDbVersion = localStorage.getItem("asl_db_version");
-const hasBundledWords = classifier.samples.some(s => s.label === "HELLO");
-if (classifier.samples.length === 0 || !hasBundledWords || storedDbVersion !== CURRENT_DB_VERSION) {
+const isExplicitlyBlank = localStorage.getItem("asl_db_blank") === "true";
+
+if (!isExplicitlyBlank && (classifier.samples.length === 0 || storedDbVersion !== CURRENT_DB_VERSION)) {
   classifier.samples = [...alphabet];
   classifier.saveToLocalStorage();
   localStorage.setItem("asl_db_version", CURRENT_DB_VERSION);
+  localStorage.setItem("asl_db_blank", "false");
 }
 
 const HAND_CONNECTIONS = [
@@ -157,8 +160,8 @@ async function initApp() {
     handsDetector.setOptions({
       maxNumHands: 1,
       modelComplexity: 1,
-      minDetectionConfidence: 0.78,
-      minTrackingConfidence: 0.78
+      minDetectionConfidence: 0.40,
+      minTrackingConfidence: 0.40
     });
 
     handsDetector.onResults(onResults);
@@ -232,7 +235,7 @@ function onResults(results) {
     const rawHands = [];
     for (let i = 0; i < results.multiHandLandmarks.length; i++) {
       const score = results.multiHandedness[i].score;
-      if (score >= 0.85) { // Strict score threshold for hand detection validity
+      if (score >= 0.40) { // Strict score threshold for hand detection validity
         // MediaPipe's raw handedness assumes a mirrored selfie view. Since our camera stream
         // is unmirrored before it is processed, raw labels are inverted compared to physical hands.
         const rawLabel = results.multiHandedness[i].label; // "Left" or "Right"
@@ -438,7 +441,8 @@ function processTranslation(handList, handednessList = ["Right"]) {
   const width = videoElement.videoWidth || 640;
   const height = videoElement.videoHeight || 480;
   const aspectRatio = width / height;
-  let prediction = classifier.classify(handList, handednessList, 5, aspectRatio);
+  const isStrict = chkStrictMode ? chkStrictMode.checked : false;
+  let prediction = classifier.classify(handList, handednessList, 5, aspectRatio, isStrict);
   
   // Inject motion tracing detection overrides for J & Z
   const motionPred = checkMotionGestures(handList, prediction.label);
@@ -447,7 +451,25 @@ function processTranslation(handList, handednessList = ["Right"]) {
   }
   
   if (debugCoords) {
-    debugCoords.innerText = '';
+    if (handList && handList.length > 0) {
+      const lm = handList[0];
+      const wrist = lm[0];
+      const mcp = lm[9];
+      const dxMcp = (mcp.x - wrist.x) * aspectRatio;
+      const dyMcp = mcp.y - wrist.y;
+      const rotationAngle = Math.atan2(dxMcp, -dyMcp);
+      const angleDeg = Math.abs(rotationAngle * 180 / Math.PI);
+      const rawYDiff = mcp.y - wrist.y;
+
+      const dxIndex = (lm[8].x - lm[5].x) * aspectRatio;
+      const dyIndex = lm[8].y - lm[5].y;
+      const indexAngle = Math.atan2(dxIndex, -dyIndex);
+      const indexAngleDeg = Math.abs(indexAngle * 180 / Math.PI);
+
+      debugCoords.innerText = `Palm Angle: ${angleDeg.toFixed(1)}° | Finger Angle: ${indexAngleDeg.toFixed(1)}°\nPalm YDiff: ${rawYDiff.toFixed(3)} | Finger dy: ${dyIndex.toFixed(3)}`;
+    } else {
+      debugCoords.innerText = '';
+    }
   }
 
   if (prediction.label !== "NO SIGN" && prediction.confidence > 0.45) {
@@ -839,6 +861,28 @@ function setupEventListeners() {
     e.target.value = '';
   });
 
+  if (chkStrictMode) {
+    chkStrictMode.checked = localStorage.getItem("asl_strict_mode") === "true";
+    chkStrictMode.addEventListener("change", () => {
+      localStorage.setItem("asl_strict_mode", chkStrictMode.checked);
+    });
+  }
+
+  const btnWipeDataset = document.getElementById("btn-wipe-dataset");
+  if (btnWipeDataset) {
+    btnWipeDataset.addEventListener("click", () => {
+      if (confirm("WARNING: This will wipe ALL signs (including default pre-bundled alphabet) leaving a completely blank slate. You will need to train all letters yourself. Proceed?")) {
+        classifier.clearDataset();
+        classifier.samples = [];
+        classifier.saveToLocalStorage();
+        localStorage.setItem("asl_db_blank", "true");
+        renderGestureList();
+        updateStats();
+        playBeep(150, 0.5, "sawtooth");
+      }
+    });
+  }
+
   btnClearDataset.addEventListener('click', () => {
     if (confirm("WARNING: This will wipe all custom gestures and reset the engine to default. This cannot be undone. Proceed?")) {
       classifier.clearDataset();
@@ -846,6 +890,7 @@ function setupEventListeners() {
       classifier.samples = [...alphabet];
       classifier.saveToLocalStorage();
       localStorage.setItem("asl_db_version", CURRENT_DB_VERSION);
+      localStorage.setItem("asl_db_blank", "false");
       renderGestureList();
       updateStats();
       playBeep(200, 0.4, 'sawtooth');
