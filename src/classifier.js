@@ -132,8 +132,15 @@ export class ASLClassifier {
     const testFeature = this.normalize(landmarks, handedness, aspectRatio);
     if (!testFeature) return { label: "NO SIGN", confidence: 0 };
 
+    // Calculate rotation angle to detect hand orientation (vertical vs horizontal)
+    const wrist = landmarks[0];
+    const mcp = landmarks[9];
+    const dxMcp = (mcp.x - wrist.x) * aspectRatio;
+    const dyMcp = mcp.y - wrist.y;
+    const rotationAngle = Math.atan2(dxMcp, -dyMcp);
+
     // 1. Try Rule-Based classification first for core fingerspelling letters
-    const ruleLabel = this.classifyRuleBased(testFeature);
+    const ruleLabel = this.classifyRuleBased(testFeature, rotationAngle);
     if (ruleLabel) {
       return {
         label: ruleLabel,
@@ -234,7 +241,7 @@ export class ASLClassifier {
    * Rule-Based heuristic classifier for core fingerspelling letters.
    * Utilizes finger extension thresholds on rotated normalized 3D landmarks.
    */
-  classifyRuleBased(features) {
+  classifyRuleBased(features, rotationAngle = 0) {
     const lm = [];
     for (let i = 0; i < 21; i++) {
       lm.push({
@@ -267,6 +274,8 @@ export class ASLClassifier {
     // Scale-invariant, rotation-independent thumb extension check (D: folded, G/L: extended)
     const thumbExtended = dist(lm[4], lm[9]) > 0.58;
 
+    const angleDeg = Math.abs(rotationAngle * 180 / Math.PI);
+
     // 1. B & C: Index, Middle, Ring, Pinky extended
     if (extIndex && extMiddle && extRing && extPinky) {
       if (!isStraightIndex && !isStraightMiddle) {
@@ -297,9 +306,13 @@ export class ASLClassifier {
       return "I";
     }
     
-    // 6. L: Index extended (straight), Thumb extended, others folded
+    // 6. L / G: Index extended (straight), Thumb extended, others folded
     if (extIndex && isStraightIndex && !extMiddle && !extRing && !extPinky && thumbExtended) {
-      return "L";
+      if (angleDeg < 45) {
+        return "L"; // Vertical is L
+      } else {
+        return "G"; // Sideways is G
+      }
     }
     
     // 7. D: Index extended (straight), Thumb folded, others folded
@@ -307,8 +320,11 @@ export class ASLClassifier {
       return "D";
     }
     
-    // 8. V, U, R: Index and Middle extended vertically (straight), Ring and Pinky folded
+    // 8. V, U, R, H: Index and Middle extended (straight), Ring and Pinky folded
     if (extIndex && extMiddle && isStraightIndex && isStraightMiddle && !extRing && !extPinky) {
+      if (angleDeg >= 45) {
+        return "H"; // Sideways is H
+      }
       const indexMiddleDist = Math.hypot(lm[8].x - lm[12].x, lm[8].y - lm[12].y);
       if (lm[8].x < lm[12].x) {
         return "R"; // Crossed
