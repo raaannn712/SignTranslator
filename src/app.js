@@ -85,6 +85,8 @@ const classifier = new ASLClassifier();
 
 // Motion history buffer specifically for dynamic letters J and Z
 let motionHistory = [];
+let motionLockLabel = '';
+let motionLockFrames = 0;
 
 const getAlphabetArray = () => {
   if (Array.isArray(defaultAlphabet)) return defaultAlphabet;
@@ -445,10 +447,18 @@ function processTranslation(handList, handednessList = ["Right"]) {
   const isStrict = chkStrictMode ? chkStrictMode.checked : false;
   let prediction = classifier.classify(handList, handednessList, 5, aspectRatio, isStrict);
   
-  // Inject motion tracing detection overrides for J & Z
-  const motionPred = checkMotionGestures(handList, prediction.label);
-  if (motionPred) {
-    prediction = motionPred;
+  // Check if we are currently locked in a motion prediction
+  if (motionLockFrames > 0) {
+    prediction = { label: motionLockLabel, confidence: 0.95 };
+    motionLockFrames--;
+  } else {
+    // Inject motion tracing detection overrides for J & Z
+    const motionPred = checkMotionGestures(handList, prediction.label);
+    if (motionPred) {
+      prediction = motionPred;
+      motionLockLabel = motionPred.label;
+      motionLockFrames = 12; // Hold J/Z for 12 frames to let the smoothing buffer stabilize and show it clearly
+    }
   }
   
   if (debugCoords) {
@@ -525,6 +535,8 @@ function processTranslation(handList, handednessList = ["Right"]) {
 
 function handleNoHand() {
   motionHistory = []; // Clear motion tracker when hands leave screen
+  motionLockFrames = 0; // Reset motion display lock
+  motionLockLabel = '';
   predText.innerText = "NO SIGN";
   predText.classList.add('empty');
   predConfidenceFill.style.width = '0%';
